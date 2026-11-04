@@ -1,0 +1,86 @@
+# Installs everything on a clean macOS runner from the files on the Release page,
+# loads the Employees data, re-runs the installer and removes it all again.
+# Run by hand from the Actions tab before each trimester; it also catches
+# release assets that have gone wrong. The Windows job only parses the scripts
+# (the Windows installers are interactive) and dry-runs the uninstaller.
+name: Test installers
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_TAG: v2026-t3
+  TEST_PASSWORD: "Te'st\\Pw 9\"#!x"
+
+jobs:
+  macos:
+    runs-on: macos-15   # Apple Silicon runner
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Put release files where the installer looks first
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$HOME/Downloads"
+          gh release download "$RELEASE_TAG" --dir "$HOME/Downloads" \
+            --pattern 'mysql-26.10.0-macos15-arm64.tar.gz' \
+            --pattern 'mysql-workbench-26.10.0-macos-arm64.zip' \
+            --pattern 'test_db-master.zip'
+      - name: Install
+        env:
+          MIS781_ROOT_PASSWORD: ${{ env.TEST_PASSWORD }}
+          MIS781_IMPORT: y
+          MIS781_LOCAL_SCRIPTS: ${{ github.workspace }}
+        run: zsh ./install.sh
+      - name: Check server, password, data and network binding
+        run: |
+          M="$HOME/mysql/bin/mysql"
+          printf '[client]\nuser=root\nhost=127.0.0.1\npassword="%s"\n' "$(printf '%s' "$TEST_PASSWORD" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')" > /tmp/t.cnf
+          "$M" --version
+          test "$("$M" --defaults-extra-file=/tmp/t.cnf -N -e 'SELECT COUNT(*) FROM employees.employees')" = 300024
+          test "$("$M" --defaults-extra-file=/tmp/t.cnf -N -e 'SELECT COUNT(*) FROM employees.salaries')" = 2844047
+          test "$("$M" --defaults-extra-file=/tmp/t.cnf -N -e 'SELECT COUNT(*) FROM information_schema.tables WHERE table_schema="employees"')" = 8
+          test "$("$M" --defaults-extra-file=/tmp/t.cnf -N -e 'SELECT @@bind_address')" = 127.0.0.1
+          ls -d "/Applications/MySQL Workbench.app"
+          grep -q 'mysql/bin' "$HOME/.zshrc"
+      - name: Re-run changes nothing
+        env:
+          MIS781_ROOT_PASSWORD: ${{ env.TEST_PASSWORD }}
+          MIS781_IMPORT: y
+          MIS781_LOCAL_SCRIPTS: ${{ github.workspace }}
+        run: zsh ./install.sh | tee rerun.log && grep -q 'already loaded' rerun.log
+      - name: Standalone import script reloads cleanly
+        run: |
+          "$HOME/mysql/bin/mysql" --defaults-extra-file=/tmp/t.cnf -e 'DROP DATABASE employees'
+          MIS781_CNF=/tmp/t.cnf MIS781_IMPORT=y zsh ./import-employees.sh
+      - name: Uninstall
+        run: |
+          bash ./uninstall-mysql.sh --dry-run
+          bash ./uninstall-mysql.sh --yes
+          test ! -e "$HOME/mysql"
+          test ! -e "$HOME/Library/LaunchAgents/com.mis781.mysqld.plist"
+          ! pgrep -x mysqld
+          ! grep -q 'MIS781' "$HOME/.zshrc"
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse the PowerShell scripts (syntax check)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($f in 'install.ps1', 'import-employees.ps1', 'uninstall-mysql.ps1') {
+            $tokens = $null; $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f), [ref]$tokens, [ref]$errors)
+            if ($errors.Count) { $errors | ForEach-Object { Write-Host "$f : $_" }; throw "$f has syntax errors" }
+            Write-Host "$f parses OK"
+          }
+      - name: Uninstaller dry run
+        shell: powershell
+        run: .\uninstall-mysql.ps1 -DryRun
