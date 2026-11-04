@@ -1,6 +1,7 @@
 # Installs everything on a clean macOS runner from the files on the Release page,
-# loads the Employees data, re-runs the installer and removes it all again.
-# Run by hand from the Actions tab before each trimester; it also catches
+# loads the Employees data, resets the root password, re-runs the installer and
+# removes it all again, driving it all through the setup script's unattended
+# mode. Run by hand from the Actions tab before each trimester; it also catches
 # release assets that have gone wrong. The Windows job uses the installer's
 # unattended mode (MIS781_ROOT_PASSWORD set), so the click-through path itself
 # is not exercised there.
@@ -15,13 +16,20 @@ permissions:
 env:
   RELEASE_TAG: v2026-t3
   TEST_PASSWORD: "Te'st\\Pw 9\"#!x"
+  SECOND_PASSWORD: "Ne'w\\Pw 7\"#!y"
 
 jobs:
   macos:
     runs-on: macos-15   # Apple Silicon runner
-    timeout-minutes: 40
+    timeout-minutes: 45
+    env:
+      MIS781_LOCAL_SCRIPTS: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
+      - name: Syntax check
+        run: |
+          zsh -n setup.sh install.sh import-employees.sh
+          bash -n uninstall-mysql.sh
       - name: Put release files where the installer looks first
         env:
           GH_TOKEN: ${{ github.token }}
@@ -31,12 +39,19 @@ jobs:
             --pattern 'mysql-26.10.0-macos15-arm64.tar.gz' \
             --pattern 'mysql-workbench-26.10.0-macos-arm64.zip' \
             --pattern 'test_db-master.zip'
-      - name: Install
+      - name: Scan of a clean machine recommends Install
         env:
+          MIS781_ACTION: scan
+        run: |
+          zsh ./setup.sh | tee scan.log
+          grep -q 'MySQL Server      none' scan.log
+          grep -q 'Recommended: Install' scan.log
+      - name: Install through the setup script
+        env:
+          MIS781_ACTION: install
           MIS781_ROOT_PASSWORD: ${{ env.TEST_PASSWORD }}
           MIS781_IMPORT: y
-          MIS781_LOCAL_SCRIPTS: ${{ github.workspace }}
-        run: zsh ./install.sh
+        run: zsh ./setup.sh
       - name: Check server, password, data and network binding
         run: |
           M="$HOME/mysql/bin/mysql"
@@ -48,35 +63,97 @@ jobs:
           test "$("$M" --defaults-extra-file=/tmp/t.cnf -N -e 'SELECT @@bind_address')" = 127.0.0.1
           ls -d "/Applications/MySQL Workbench.app"
           grep -q 'mysql/bin' "$HOME/.zshrc"
+      - name: Scan of a complete machine recommends Load data
+        env:
+          MIS781_ACTION: scan
+        run: |
+          zsh ./setup.sh | tee scan.log
+          grep -q 'MySQL Server      ours, running' scan.log
+          grep -q 'Recommended: Load' scan.log
+      - name: Reset without confirmation changes nothing
+        env:
+          MIS781_ACTION: reset
+          MIS781_NEW_PASSWORD: ${{ env.SECOND_PASSWORD }}
+        run: |
+          zsh ./setup.sh | tee reset.log
+          grep -q 'Nothing was changed' reset.log
+          "$HOME/mysql/bin/mysql" --defaults-extra-file=/tmp/t.cnf -N -e 'SELECT 1'
+      - name: Reset the root password, data survives
+        env:
+          MIS781_ACTION: reset
+          MIS781_NEW_PASSWORD: ${{ env.SECOND_PASSWORD }}
+          MIS781_CONFIRM: yes
+        run: |
+          zsh ./setup.sh
+          M="$HOME/mysql/bin/mysql"
+          printf '[client]\nuser=root\nhost=127.0.0.1\npassword="%s"\n' "$(printf '%s' "$SECOND_PASSWORD" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')" > /tmp/t2.cnf
+          ! "$M" --defaults-extra-file=/tmp/t.cnf -N -e 'SELECT 1' 2>/dev/null
+          test "$("$M" --defaults-extra-file=/tmp/t2.cnf -N -e 'SELECT COUNT(*) FROM employees.employees')" = 300024
+          launchctl print "gui/$(id -u)/com.mis781.mysqld" | grep -q 'state = running'
       - name: Re-run changes nothing
         env:
-          MIS781_ROOT_PASSWORD: ${{ env.TEST_PASSWORD }}
+          MIS781_ACTION: install
+          MIS781_ROOT_PASSWORD: ${{ env.SECOND_PASSWORD }}
           MIS781_IMPORT: y
-          MIS781_LOCAL_SCRIPTS: ${{ github.workspace }}
-        run: zsh ./install.sh | tee rerun.log && grep -q 'already loaded' rerun.log
+        run: zsh ./setup.sh | tee rerun.log && grep -q 'already loaded' rerun.log
       - name: Standalone import script reloads cleanly
         run: |
-          "$HOME/mysql/bin/mysql" --defaults-extra-file=/tmp/t.cnf -e 'DROP DATABASE employees'
-          MIS781_CNF=/tmp/t.cnf MIS781_IMPORT=y zsh ./import-employees.sh
-      - name: Uninstall
+          "$HOME/mysql/bin/mysql" --defaults-extra-file=/tmp/t2.cnf -e 'DROP DATABASE employees'
+          MIS781_CNF=/tmp/t2.cnf MIS781_IMPORT=y zsh ./import-employees.sh
+      - name: Remove server without confirmation changes nothing
+        env:
+          MIS781_ACTION: remove-server
         run: |
-          bash ./uninstall-mysql.sh --dry-run
-          bash ./uninstall-mysql.sh --yes
+          zsh ./setup.sh | tee rm.log
+          grep -q 'ours' rm.log
+          grep -q 'Nothing was changed' rm.log
+          test -d "$HOME/mysql"
+      - name: Remove server keeps Workbench and the Employees files
+        env:
+          MIS781_ACTION: remove-server
+          MIS781_CONFIRM: yes
+        run: |
+          zsh ./setup.sh
           test ! -e "$HOME/mysql"
           test ! -e "$HOME/Library/LaunchAgents/com.mis781.mysqld.plist"
           ! pgrep -x mysqld
           ! grep -q 'MIS781' "$HOME/.zshrc"
+          ls -d "/Applications/MySQL Workbench.app"
+          test -f "$HOME/MIS781/test_db-master/employees.sql"
+      - name: Install again reuses Workbench and the files
+        env:
+          MIS781_ACTION: install
+          MIS781_ROOT_PASSWORD: ${{ env.TEST_PASSWORD }}
+          MIS781_IMPORT: n
+        run: |
+          zsh ./setup.sh | tee reinstall.log
+          grep -q 'Workbench already installed' reinstall.log
+          "$HOME/mysql/bin/mysql" --defaults-extra-file=/tmp/t.cnf -N -e 'SELECT 1'
+      - name: Remove everything
+        env:
+          MIS781_ACTION: remove-all
+          MIS781_CONFIRM: yes
+        run: |
+          zsh ./setup.sh
+          test ! -e "$HOME/mysql"
+          test ! -e "/Applications/MySQL Workbench.app"
+          test ! -e "$HOME/Library/Application Support/MySQL/Workbench"
+          test ! -e "$HOME/MIS781"
+          test ! -e "$HOME/Downloads/test_db-master.zip"
+          ! pgrep -x mysqld
 
   windows:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
+    env:
+      MIS781_LOCAL_SCRIPTS: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
       - name: Parse the PowerShell scripts (syntax check)
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          foreach ($f in 'install.ps1', 'import-employees.ps1', 'uninstall-mysql.ps1') {
+          foreach ($f in 'setup.ps1', 'install.ps1', 'import-employees.ps1', 'uninstall-mysql.ps1') {
             $tokens = $null; $errors = $null
             [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f), [ref]$tokens, [ref]$errors)
             if ($errors.Count) { $errors | ForEach-Object { Write-Host "$f : $_" }; throw "$f has syntax errors" }
@@ -96,15 +173,25 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\Downloads" | Out-Null
           gh release download $env:RELEASE_TAG --dir "$env:USERPROFILE\Downloads" --pattern '*.msi' --pattern 'test_db-master.zip'
+      - name: Scan of a clean machine recommends Install
+        shell: powershell
+        env:
+          MIS781_ACTION: scan
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Get-Content .\setup.ps1 -Raw | Invoke-Expression | Out-String
+          Write-Host $out
+          if ($out -notmatch 'MySQL Server      none') { throw 'scan: server should be none' }
+          if ($out -notmatch 'Recommended: Install') { throw 'scan: should recommend Install' }
       - name: Install (unattended) and import, the way a student runs it (as text through iex)
         shell: powershell
         env:
+          MIS781_ACTION: install
           MIS781_ROOT_PASSWORD: ${{ env.TEST_PASSWORD }}
           MIS781_IMPORT: y
-          MIS781_LOCAL_SCRIPTS: ${{ github.workspace }}
         run: |
           $ErrorActionPreference = 'Stop'
-          Get-Content .\install.ps1 -Raw | Invoke-Expression
+          Get-Content .\setup.ps1 -Raw | Invoke-Expression
       - name: Where did everything go (diagnostics)
         if: failure()
         shell: powershell
@@ -115,6 +202,7 @@ jobs:
           Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*','HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -like 'MySQL*' } | Select-Object DisplayName, DisplayVersion, InstallLocation | Format-Table -AutoSize
           Get-ChildItem 'C:\ProgramData\MySQL' -Recurse -Depth 1 -ErrorAction SilentlyContinue | Select-Object FullName
           Get-ChildItem "$env:TEMP" -Filter '*onfigurator*' -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "--- $($_.FullName)"; Get-Content $_.FullName -Tail 40 }
+          Get-ChildItem "$env:TEMP" -Filter 'mis781-*.log' -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "--- $($_.FullName)"; Get-Content $_.FullName -Tail 40 }
       - name: Check server, password, data and network binding
         shell: powershell
         run: |
@@ -128,20 +216,103 @@ jobs:
           if ((& $q 'SELECT COUNT(*) FROM employees.salaries') -ne '2844047') { throw 'salaries count' }
           if ((& $q "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='employees'") -ne '8') { throw 'object count' }
           Get-Service 'MySQL*' | Format-Table Name, Status, StartType
+      - name: Scan of a complete machine recommends Load data
+        shell: powershell
+        env:
+          MIS781_ACTION: scan
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Get-Content .\setup.ps1 -Raw | Invoke-Expression | Out-String
+          Write-Host $out
+          if ($out -notmatch 'MySQL Server      ours, running') { throw 'scan: server should be ours, running' }
+          if ($out -notmatch 'Recommended: Load') { throw 'scan: should recommend Load' }
+      - name: Reset without confirmation changes nothing
+        shell: powershell
+        env:
+          MIS781_ACTION: reset
+          MIS781_NEW_PASSWORD: ${{ env.SECOND_PASSWORD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Get-Content .\setup.ps1 -Raw | Invoke-Expression | Out-String
+          Write-Host $out
+          if ($out -notmatch 'Nothing was changed') { throw 'reset should have stopped before acting' }
+          & 'C:\Program Files\MySQL\MySQL Server 26.10\bin\mysql.exe' "--defaults-extra-file=$env:TEMP\t.cnf" -N -e 'SELECT 1'
+          if ($LASTEXITCODE -ne 0) { throw 'old password should still work' }
+      - name: Reset the root password, data survives
+        shell: powershell
+        env:
+          MIS781_ACTION: reset
+          MIS781_NEW_PASSWORD: ${{ env.SECOND_PASSWORD }}
+          MIS781_CONFIRM: yes
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-Content .\setup.ps1 -Raw | Invoke-Expression
+          $M = 'C:\Program Files\MySQL\MySQL Server 26.10\bin\mysql.exe'
+          $esc = ($env:SECOND_PASSWORD -replace '\\','\\') -replace '"','\"'
+          [IO.File]::WriteAllText("$env:TEMP\t2.cnf", "[client]`nuser=root`nhost=127.0.0.1`npassword=`"$esc`"`n", [Text.UTF8Encoding]::new($false))
+          $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+          & $M "--defaults-extra-file=$env:TEMP\t.cnf" -N -e 'SELECT 1' 2>$null
+          $old = $LASTEXITCODE
+          $ErrorActionPreference = $prev
+          if ($old -eq 0) { throw 'old password should no longer work' }
+          $n = (& $M "--defaults-extra-file=$env:TEMP\t2.cnf" -N -e 'SELECT COUNT(*) FROM employees.employees' | Out-String).Trim()
+          if ($n -ne '300024') { throw "employees count after reset: $n" }
+          if ((Get-Service 'MySQL*' | Where-Object Name -notmatch 'Router').Status -ne 'Running') { throw 'service not running after reset' }
       - name: Re-run changes nothing
         shell: powershell
         env:
-          MIS781_ROOT_PASSWORD: ${{ env.TEST_PASSWORD }}
+          MIS781_ACTION: install
+          MIS781_ROOT_PASSWORD: ${{ env.SECOND_PASSWORD }}
           MIS781_IMPORT: y
-          MIS781_LOCAL_SCRIPTS: ${{ github.workspace }}
         run: |
           $ErrorActionPreference = 'Stop'
-          Get-Content .\install.ps1 -Raw | Invoke-Expression
-      - name: Uninstall
+          Get-Content .\setup.ps1 -Raw | Invoke-Expression
+      - name: Remove server without confirmation changes nothing
         shell: powershell
+        env:
+          MIS781_ACTION: remove-server
         run: |
           $ErrorActionPreference = 'Stop'
-          .\uninstall-mysql.ps1 -DryRun
-          .\uninstall-mysql.ps1 -Yes
+          $out = Get-Content .\setup.ps1 -Raw | Invoke-Expression | Out-String
+          Write-Host $out
+          if ($out -notmatch 'Nothing was changed') { throw 'removal should have stopped before acting' }
+          if (-not (Get-Service 'MySQL*' -ErrorAction SilentlyContinue)) { throw 'service should still exist' }
+      - name: Remove server keeps Workbench and the Employees files
+        shell: powershell
+        env:
+          MIS781_ACTION: remove-server
+          MIS781_CONFIRM: yes
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-Content .\setup.ps1 -Raw | Invoke-Expression
           if (Test-Path 'C:\ProgramData\MySQL\MySQL Server 26.10') { throw 'data folder still there' }
           if (Get-Service 'MySQL*' -ErrorAction SilentlyContinue) { throw 'service still there' }
+          if (-not (Test-Path "$env:USERPROFILE\MIS781\test_db-master\employees.sql")) { throw 'Employees files should be kept' }
+          $wb = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -like 'MySQL Workbench*' }
+          if (-not $wb) { throw 'Workbench should be kept' }
+      - name: Install again reuses Workbench and the files
+        shell: powershell
+        env:
+          MIS781_ACTION: install
+          MIS781_ROOT_PASSWORD: ${{ env.TEST_PASSWORD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Get-Content .\setup.ps1 -Raw | Invoke-Expression | Out-String
+          Write-Host $out
+          if ($out -notmatch 'Workbench already installed') { throw 'Workbench should have been reused' }
+          & 'C:\Program Files\MySQL\MySQL Server 26.10\bin\mysql.exe' "--defaults-extra-file=$env:TEMP\t.cnf" -N -e 'SELECT 1'
+          if ($LASTEXITCODE -ne 0) { throw 'fresh server should accept the password' }
+      - name: Remove everything
+        shell: powershell
+        env:
+          MIS781_ACTION: remove-all
+          MIS781_CONFIRM: yes
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-Content .\setup.ps1 -Raw | Invoke-Expression
+          if (Get-Service 'MySQL*' -ErrorAction SilentlyContinue) { throw 'service still there' }
+          if (Test-Path "$env:USERPROFILE\MIS781") { throw 'MIS781 folder still there' }
+          if (Test-Path "$env:APPDATA\MySQL\Workbench") { throw 'Workbench profile still there' }
+          if (Test-Path "$env:USERPROFILE\Downloads\test_db-master.zip") { throw 'download still there' }
+          $wb = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -like 'MySQL Workbench*' }
+          if ($wb) { throw 'Workbench still registered' }

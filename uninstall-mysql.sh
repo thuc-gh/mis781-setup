@@ -7,10 +7,14 @@
 #   - Official Oracle DMG/PKG installer (/usr/local/mysql*)
 #   - Leftovers: launch daemons, data dirs, configs, package receipts
 #
+# Workbench and the Employees files are kept unless --all is given.
+#
 # Usage:
 #   bash uninstall-mysql.sh            # interactive (asks before deleting)
 #   bash uninstall-mysql.sh --dry-run  # show what would be removed, change nothing
-#   bash uninstall-mysql.sh --yes      # no confirmation prompt
+#   bash uninstall-mysql.sh --yes      # no confirmation prompt (MIS781_CONFIRM=yes does the same)
+#   bash uninstall-mysql.sh --all      # also remove Workbench, its saved connections,
+#                                      # ~/MIS781 and the downloaded installers
 #
 # Or straight from GitHub without downloading:
 #   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/thuc-gh/mis781-setup/main/uninstall-mysql.sh)"
@@ -22,13 +26,18 @@ set -u
 
 DRY_RUN=false
 ASSUME_YES=false
+ALL=false
+[ "${MIS781_CONFIRM:-}" = yes ] && ASSUME_YES=true
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=true ;;
     --yes|-y)  ASSUME_YES=true ;;
+    --all)     ALL=true ;;
     *) echo "Unknown option: $arg"; exit 1 ;;
   esac
 done
+APPS="${MIS781_APPS:-/Applications}"
+WB_APP="MySQL Workbench.app"
 
 if [ "$(id -u)" -eq 0 ]; then
   echo "Do not run this script with sudo. Run it as your normal user;"
@@ -70,7 +79,7 @@ HOME_DIRS=()
 [ -f "$HOME_PLIST" ] && HOME_DIRS+=("$HOME_PLIST")
 if [ "${#HOME_DIRS[@]}" -gt 0 ]; then
   FOUND_ANY=true
-  bold "Found: MIS781 installation in your home folder"
+  bold "Found: MySQL Server from this unit in your home folder (ours)"
   for d in "${HOME_DIRS[@]}"; do info "$d"; done
 fi
 
@@ -85,7 +94,7 @@ if command -v brew >/dev/null 2>&1; then
 fi
 if [ "${#BREW_FORMULAE[@]}" -gt 0 ]; then
   FOUND_ANY=true
-  bold "Found: Homebrew installation"
+  bold "Found: Homebrew installation (other, not from this unit)"
   for f in "${BREW_FORMULAE[@]}"; do info "formula: $f"; done
 fi
 
@@ -96,7 +105,7 @@ for d in "/opt/homebrew/var/mysql" "/usr/local/var/mysql" "/opt/homebrew/etc/my.
 done
 if [ "${#BREW_DATA_DIRS[@]}" -gt 0 ]; then
   FOUND_ANY=true
-  bold "Found: Homebrew MySQL data/config"
+  bold "Found: Homebrew MySQL data/config (other)"
   for d in "${BREW_DATA_DIRS[@]}"; do info "$d"; done
 fi
 
@@ -108,7 +117,7 @@ for d in /usr/local/mysql /usr/local/mysql-*; do
 done
 if [ "${#DMG_DIRS[@]}" -gt 0 ]; then
   FOUND_ANY=true
-  bold "Found: Oracle DMG installation"
+  bold "Found: Oracle DMG installation (other, not from this unit)"
   for d in "${DMG_DIRS[@]}"; do info "$d"; done
 fi
 
@@ -165,6 +174,26 @@ if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Image}}' 2>/dev/n
   bold "Note: a MySQL Docker container is running — left alone (docker rm it yourself)."
 fi
 
+# --- Everything else from this unit (only with --all) ---
+ALL_ITEMS=()
+if $ALL; then
+  for d in "$APPS" "$HOME/Applications"; do
+    for app in "$WB_APP" "MySQLWorkbench.app"; do
+      [ -d "$d/$app" ] && ALL_ITEMS+=("$d/$app")
+    done
+  done
+  [ -e "$HOME/Library/Application Support/MySQL/Workbench" ] && ALL_ITEMS+=("$HOME/Library/Application Support/MySQL/Workbench")
+  [ -e "$HOME/MIS781" ] && ALL_ITEMS+=("$HOME/MIS781")
+  for f in mysql-26.10.0-macos15-arm64.tar.gz mysql-workbench-26.10.0-macos-arm64.zip test_db-master.zip; do
+    [ -e "$HOME/Downloads/$f" ] && ALL_ITEMS+=("$HOME/Downloads/$f")
+  done
+  if [ "${#ALL_ITEMS[@]}" -gt 0 ]; then
+    FOUND_ANY=true
+    bold "Found: Workbench, saved connections, Employees files and downloads (removed with --all)"
+    for p in "${ALL_ITEMS[@]}"; do info "$p"; done
+  fi
+fi
+
 if ! $FOUND_ANY; then
   echo
   bold "No MySQL installation found. Nothing to do."
@@ -175,10 +204,15 @@ fi
 # 2. CONFIRM
 # ---------------------------------------------------------------------------
 echo
-bold "WARNING: this will permanently delete ALL MySQL databases on this machine."
+bold "WARNING: this will permanently delete ALL MySQL databases on this machine,"
+bold "         plus everything listed above."
 echo "         Back up first if needed:  mysqldump --all-databases > backup.sql"
 echo
-if $DRY_RUN; then
+if $DRY_RUN && [ -n "${MIS781_ACTION:-}" ] && [ "${MIS781_CONFIRM:-}" != yes ]; then
+  # Reached through the setup script unattended without MIS781_CONFIRM=yes.
+  bold "Nothing was changed. Set MIS781_CONFIRM=yes to remove the items above unattended."
+  exit 0
+elif $DRY_RUN; then
   bold "Dry run: showing what would be done, changing nothing."
 elif ! $ASSUME_YES; then
   printf 'Type "yes" to uninstall everything listed above: '
@@ -261,6 +295,16 @@ if [ -f "$HOME/.my.cnf" ]; then
   run rm -f "$HOME/.my.cnf"
 fi
 
+# --all: Workbench and everything else this unit put on the Mac
+for p in "${ALL_ITEMS[@]+"${ALL_ITEMS[@]}"}"; do
+  # Try as the user first; a bundle installed by an Oracle .pkg has root-owned
+  # files inside, so fall back to sudo when anything is left.
+  run rm -rf "${p:?}" 2>/dev/null || true
+  if ! $DRY_RUN && [ -e "$p" ]; then
+    run sudo rm -rf "${p:?}"
+  fi
+done
+
 # ---------------------------------------------------------------------------
 # 5. VERIFY
 # ---------------------------------------------------------------------------
@@ -281,7 +325,7 @@ if [ -n "$LEFTOVER" ]; then
   info "NOTE: a 'mysql' binary is still on PATH at $LEFTOVER"
   info "(open a NEW terminal window — this may just be a stale shell cache)"
 fi
-for d in "$HOME/mysql" "$HOME_PLIST" /usr/local/mysql /opt/homebrew/var/mysql /usr/local/var/mysql; do
+for d in "$HOME/mysql" "$HOME_PLIST" /usr/local/mysql /opt/homebrew/var/mysql /usr/local/var/mysql "${ALL_ITEMS[@]+"${ALL_ITEMS[@]}"}"; do
   if [ -e "$d" ]; then
     info "FAIL: $d still exists"
     OK=false
@@ -289,7 +333,7 @@ for d in "$HOME/mysql" "$HOME_PLIST" /usr/local/mysql /opt/homebrew/var/mysql /u
 done
 
 if $OK; then
-  bold "MySQL has been completely removed."
+  if $ALL; then bold "MySQL, Workbench and the MIS781 files have been completely removed."; else bold "MySQL Server has been completely removed. Workbench and the Employees files were kept."; fi
   echo "If your shell still autocompletes 'mysql', run: hash -r  (or open a new terminal)."
 else
   bold "Some items could not be removed — see FAIL lines above."
