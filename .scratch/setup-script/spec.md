@@ -1,6 +1,6 @@
 # Spec: one setup script per platform that scans, recommends, then acts
 
-**Status:** implemented 2026-11-04 (Actions run still to be triggered by hand)
+**Status:** implemented and verified 2026-11-04 (Actions run 41826816809 green on macOS and Windows)
 **Vocabulary:** [GLOSSARY.md](../../GLOSSARY.md). **Decision record:** [ADR 0001](../../docs/adr/0001-forgotten-root-password-is-reset-not-reinstall.md).
 
 ## Why
