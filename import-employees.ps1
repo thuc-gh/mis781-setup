@@ -138,7 +138,7 @@ try {
             $log = Join-Path $env:TEMP 'mis781-sha2.txt'
             Start-Process -FilePath $mysql -ArgumentList "--defaults-extra-file=`"$cnf`"", '--commands=ON', '-t' `
                 -RedirectStandardInput (Join-Path $Data 'test_employees_sha2.sql') -RedirectStandardOutput $log -NoNewWindow -Wait | Out-Null
-            Get-Content $log | Where-Object { $_ -match '^\| (employees|departments|dept_manager|dept_emp|titles|salaries)' } | ForEach-Object { Write-Host "                    $_" }
+            Get-Content $log | Where-Object { $_ -match '^\| [a-z_]+ +\| (OK|not ok) ' } | ForEach-Object { Write-Host "                    $_" }
             Remove-Item $log -ErrorAction SilentlyContinue
         }
         Write-Host ''
