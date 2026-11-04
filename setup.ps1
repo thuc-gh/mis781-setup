@@ -14,10 +14,10 @@
 #   Remove everything  uninstall-mysql.ps1 -All
 #
 # Our server lives in C:\Users\<you>\mysql and runs as you, so nothing here
-# needs administrator rights, except where the legacy server (this unit's
-# earlier MSI install, a Windows service) or the Workbench MSI is involved:
-# then the script opens an administrator window by itself (Windows asks you
-# to allow it).
+# needs administrator rights. The legacy server (this unit's earlier MSI
+# install, a Windows service) and the Workbench MSI do. For those the script
+# first does everything that is yours in this window, then opens an
+# administrator window by itself for the rest (Windows asks you to allow it).
 #
 # Unattended (lab PCs, the Actions test): MIS781_ACTION=scan|install|load|reset|
 # remove-server|remove-all, plus MIS781_ROOT_PASSWORD, MIS781_IMPORT=y,
@@ -30,17 +30,23 @@ $Data      = Join-Path $env:USERPROFILE 'MIS781'
 $MysqlHome = Join-Path $env:USERPROFILE 'mysql'
 $TaskName  = 'MIS781 MySQL'
 
-# Arguments arrive only when the elevated copy is run as a file: -Action <x> -Elevated
+# Arguments arrive only when the elevated copy is run as a file:
+#   -Action <x> -Elevated [-Phase admin] [-Yes] [-User <name of the caller>]
 $Action = $env:MIS781_ACTION
 $Elevated = $false
+$Phase = 'all'          # removals: 'user' (your own items), 'admin' (the rest), 'all'
+$CallerUser = $env:USERNAME
+$Confirmed  = ($env:MIS781_CONFIRM -eq 'yes')
 for ($i = 0; $i -lt $args.Count; $i++) {
     switch ($args[$i]) {
         '-Action'   { $i++; $Action = $args[$i] }
         '-Elevated' { $Elevated = $true }
+        '-Phase'    { $i++; $Phase = $args[$i] }
+        '-Yes'      { $Confirmed = $true }
+        '-User'     { $i++; $CallerUser = $args[$i] }
     }
 }
 $Unattended = [bool]$env:MIS781_ACTION
-$Confirmed  = ($env:MIS781_CONFIRM -eq 'yes')
 $IsAdmin = (New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 Write-Host 'MIS781 setup (Windows)'
@@ -58,8 +64,8 @@ function Get-Worker([string]$Name) {
 function Invoke-Worker([string]$Name) {
     & ([scriptblock]::Create((Get-Worker $Name)))
 }
-function Invoke-Uninstaller([bool]$All, [bool]$Yes, [bool]$DryRun) {
-    & ([scriptblock]::Create((Get-Worker 'uninstall-mysql.ps1'))) -All:$All -Yes:$Yes -DryRun:$DryRun
+function Invoke-Uninstaller([bool]$All, [bool]$Yes, [bool]$DryRun, [string]$Phase = 'all') {
+    & ([scriptblock]::Create((Get-Worker 'uninstall-mysql.ps1'))) -All:$All -Yes:$Yes -DryRun:$DryRun -Phase $Phase
 }
 function Get-OurServerProcess {
     Get-Process -Name mysqld -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path -ieq (Join-Path $MysqlHome 'bin\mysqld.exe') } | Select-Object -First 1
@@ -74,7 +80,8 @@ function Start-OurServer {
 # from before week 2 (a Windows service under Program Files). Other: anything else.
 $Ours = Test-Path (Join-Path $MysqlHome 'bin\mysqld.exe')
 $OursProc = if ($Ours) { Get-OurServerProcess }
-$OursRunning = [bool]$OursProc
+# Running means our process holds port 3306, not just that it exists.
+$OursRunning = [bool]($OursProc -and (Get-NetTCPConnection -LocalPort 3306 -State Listen -ErrorAction SilentlyContinue | Where-Object OwningProcess -eq $OursProc.Id))
 $OursTask = [bool](Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue)
 
 $serverExe = Get-ChildItem 'C:\Program Files\MySQL\MySQL Server *\bin\mysqld.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -137,12 +144,14 @@ if ($Ours) { if ($OursTask) { Write-Host "  Starts at logon   yes (task '$TaskNa
 
 # ---- 2. Recommendation -------------------------------------------------------
 $Rec = ''; $Note = ''
-if ($Ours -and $LegacyRunning) {
-    $Rec = 'remove-server'; $Note = "Two servers from this unit want port 3306 and the earlier one (service $($svc.Name)) has it, so the new one cannot start. Remove MySQL Server takes both off; then Install puts the new layout back."
+if ($Ours -and $Legacy) {
+    $Rec = 'remove-server'
+    $Note = if ($LegacyRunning) { "Two servers from this unit want port 3306 and the earlier one (service $($svc.Name)) has it, so the one in your home folder cannot start. Remove MySQL Server takes both off; then Install puts the home-folder one back." }
+            else { "Two servers from this unit are installed, and the earlier one (service $($svc.Name)) will take port 3306 whenever it starts. Remove MySQL Server takes both off; then Install puts the home-folder one back." }
 } elseif ($Ours -and $OtherRunning) {
     $Rec = 'remove-server'; $Note = 'Two servers want port 3306 and the other one has it, so ours cannot start. Remove ours and use the other, or remove the other by hand and run Install again.'
 } elseif (-not $Ours -and $LegacyNoService) {
-    $Rec = 'quit'; $Note = 'MySQL Server (the earlier install) was never configured. Open MySQL Configurator from the Start menu, set a root password, keep "Windows Service" ticked and click Execute. Then run this again. Or choose Remove MySQL Server and then Install for the new layout, which needs no administrator rights.'
+    $Rec = 'quit'; $Note = 'MySQL Server (the earlier install) was never configured. Open MySQL Configurator from the Start menu, set a root password, keep "Windows Service" ticked and click Execute. Then run this again. Or choose Remove MySQL Server and then Install, which puts the server in your home folder and needs no administrator rights.'
 } elseif (-not $Ours -and -not $Legacy) {
     $Rec = 'install'
     if ($OtherRunning) { $Note = "$Other is using port 3306. Install uses that server (it asks for its root password) and still sets up Workbench and the Employees data." }
@@ -203,8 +212,12 @@ Write-Host ''
 
 # ---- 4. Act ------------------------------------------------------------------
 # Our server runs as you, so its actions need no administrator rights. The
-# legacy service and the Workbench MSI do: interactive and not admin yet, save
-# this script and run it again in an administrator window with the action.
+# legacy service and the Workbench MSI do. Interactive and not admin yet: for
+# a removal, first take off everything that is yours in this window (the list
+# and the confirmation cover both parts), then save this script and run it
+# again in an administrator window for the rest. That window may belong to
+# another account (a standard user types an administrator's password), which
+# is why your own files, task, PATH and saved password are handled here first.
 $WorkbenchMsi = [bool](Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
                        Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -like 'MySQL Workbench*' -and $_.PSChildName -like '{*' })
 $NeedsAdmin = switch ($Action) {
@@ -215,10 +228,16 @@ $NeedsAdmin = switch ($Action) {
 }
 if ($NeedsAdmin -and -not $IsAdmin) {
     if ($Unattended) { throw 'This action needs an administrator PowerShell when run unattended.' }
+    $extra = @('-User', $env:USERNAME)
+    if ($Action -in 'remove-server', 'remove-all') {
+        $went = Invoke-Uninstaller -All ($Action -eq 'remove-all') -Yes $false -DryRun $false -Phase 'user'
+        if (-not $went) { return }
+        $extra += '-Phase', 'admin', '-Yes'
+    }
     $copy = Join-Path $env:TEMP 'mis781-setup.ps1'
     [IO.File]::WriteAllText($copy, (Get-Worker 'setup.ps1'), [Text.UTF8Encoding]::new($true))
-    Write-Host 'This needs administrator rights. Windows will ask you to allow it; the rest happens in the new window.'
-    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$copy`"", '-Action', $Action, '-Elevated')
+    Write-Host 'The rest needs administrator rights. Windows will ask you to allow it; it happens in the new window.'
+    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$copy`"", '-Action', $Action, '-Elevated') + $extra
     $p = Start-Process powershell.exe -ArgumentList $argList -Verb RunAs -Wait -PassThru
     Remove-Item $copy -Force -ErrorAction SilentlyContinue
     if ($p.ExitCode -ne 0) { Write-Host "The administrator window finished with code $($p.ExitCode)." }
@@ -277,13 +296,19 @@ function Write-PasswordFiles([string]$Password, [string]$Init, [string]$Cnf) {
     [IO.File]::WriteAllText($Cnf, "[client]`nuser=root`nhost=127.0.0.1`nport=3306`npassword=`"$pwEsc`"`n", [Text.UTF8Encoding]::new($false))
 }
 
-# Gives Workbench the new password for its connection to this server.
+# Gives Workbench the new password for its connection to this server. Returns
+# whether it did; in an administrator window that belongs to another account
+# the saved password is that account's, not yours, so nothing is saved.
 function Update-WorkbenchPassword([string]$Cnf) {
-    if (-not $Workbench) { return }
+    if (-not $Workbench) { return $false }
     Write-Host ''
+    if ($Elevated -and $CallerUser -and $CallerUser -ine $env:USERNAME) {
+        Write-Host "  This administrator window belongs to $env:USERNAME, so the password saved for Workbench was not updated; Workbench will ask $CallerUser for it once."
+        return $false
+    }
     $env:MIS781_CNF = $Cnf
-    try { & ([scriptblock]::Create((Get-Worker 'workbench-connection.ps1'))) }
-    catch { Write-Host "  Could not update the password saved for Workbench ($($_.Exception.Message)). Workbench will ask for it." }
+    try { & ([scriptblock]::Create((Get-Worker 'workbench-connection.ps1'))); return $true }
+    catch { Write-Host "  Could not update the password saved for Workbench ($($_.Exception.Message)). Workbench will ask for it."; return $false }
     finally { Remove-Item Env:\MIS781_CNF -ErrorAction SilentlyContinue }
 }
 
@@ -348,9 +373,10 @@ function Reset-OurPassword {
             Write-Host '  MySQL Server      OK  (running, new root password works)'
             if ($n -eq '300024') { Write-Host '  Employees data    OK  (300024 employees, untouched)' } else { Write-Host "  Employees data    not loaded (run this again and choose 'Load the Employees database')" }
             if (-not $OursTask) { Write-Host "  NOTE: no logon task was found; choose 'Install' once to put it back." }
-            Update-WorkbenchPassword $cnf
+            $saved = Update-WorkbenchPassword $cnf
             Write-Host ''
-            Write-Host 'Done. Workbench has the new password; use it too in the mysql command line.'
+            if ($saved) { Write-Host 'Done. Workbench has the new password; use it too in the mysql command line.' }
+            else { Write-Host 'Done. Use the new password in Workbench (host 127.0.0.1, port 3306, user root) and in the mysql command line.' }
         } else {
             throw "The server is back up but the new password does not work. Choose 'Remove MySQL Server' and then 'Install' instead."
         }
@@ -415,9 +441,10 @@ function Reset-LegacyPassword {
             $n = (& $mysql "--defaults-file=$cnf" -N -e 'SELECT COUNT(*) FROM employees.employees' 2>$null | Out-String).Trim()
             Write-Host "  MySQL Server      OK  ($($svc.Name) running, new root password works)"
             if ($n -eq '300024') { Write-Host '  Employees data    OK  (300024 employees, untouched)' } else { Write-Host "  Employees data    not loaded (run this again and choose 'Load the Employees database')" }
-            Update-WorkbenchPassword $cnf
+            $saved = Update-WorkbenchPassword $cnf
             Write-Host ''
-            Write-Host 'Done. Use the new password in Workbench (host 127.0.0.1, port 3306, user root).'
+            if ($saved) { Write-Host 'Done. Workbench has the new password; use it too in the mysql command line.' }
+            else { Write-Host 'Done. Use the new password in Workbench (host 127.0.0.1, port 3306, user root).' }
         } else {
             throw "The service is back up but the new password does not work. Choose 'Remove MySQL Server' and then 'Install' instead."
         }
@@ -431,8 +458,8 @@ try {
         'install'       { Invoke-Worker 'install.ps1' }
         'load'          { Invoke-Worker 'import-employees.ps1' }
         'reset'         { if ($Ours) { Reset-OurPassword } else { Reset-LegacyPassword } }
-        'remove-server' { Invoke-Uninstaller -All $false -Yes $Confirmed -DryRun ($Unattended -and -not $Confirmed) }
-        'remove-all'    { Invoke-Uninstaller -All $true  -Yes $Confirmed -DryRun ($Unattended -and -not $Confirmed) }
+        'remove-server' { Invoke-Uninstaller -All $false -Yes $Confirmed -DryRun ($Unattended -and -not $Confirmed) -Phase $Phase | Out-Null }
+        'remove-all'    { Invoke-Uninstaller -All $true  -Yes $Confirmed -DryRun ($Unattended -and -not $Confirmed) -Phase $Phase | Out-Null }
         'quit'          { Write-Host 'Nothing was changed.' }
     }
 } finally {

@@ -21,7 +21,8 @@ $WbMsi     = 'mysql-workbench-26.10.0-winx64.msi'
 $DbZip     = 'test_db-master.zip'
 $VcRedist  = 'https://aka.ms/vs/17/release/vc_redist.x64.exe'
 $TaskName  = 'MIS781 MySQL'
-$Unattended = [bool]$env:MIS781_ACTION
+# Unattended (lab PCs, the Actions test): no prompts at all.
+$Unattended = [bool]$env:MIS781_ACTION -or [bool]$env:MIS781_ROOT_PASSWORD
 
 Write-Host 'MIS781 Windows setup'
 Write-Host '===================='
@@ -44,6 +45,12 @@ if ($freeGB -lt 5) {
 New-Item -ItemType Directory -Force -Path $DL, $Data | Out-Null
 
 # ---- Helpers ----------------------------------------------------------------
+# Runs a native command whose stderr must not count as an error (curl's progress
+# bar, tar's warnings): Windows PowerShell 5.1 would otherwise stop the script.
+function Invoke-Native([scriptblock]$Command) {
+    $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    try { & $Command; return $LASTEXITCODE } finally { $ErrorActionPreference = $prev }
+}
 function Read-Secret([string]$Prompt) {
     $s = Read-Host -Prompt $Prompt -AsSecureString
     $b = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)
@@ -60,8 +67,8 @@ function Get-Asset {
         Write-Host "      Downloading $Name ($Size)..."
         $part = "$target.part"
         if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
-            & curl.exe -# -fL -o $part "$Base/$Name"
-            if ($LASTEXITCODE -ne 0) { throw "Download of $Name failed (curl exit code $LASTEXITCODE). Check your internet connection and run this again." }
+            $rc = Invoke-Native { & curl.exe -# -fL -o $part "$Base/$Name" }
+            if ($rc -ne 0) { throw "Download of $Name failed (curl exit code $rc). Check your internet connection and run this again." }
         } else {
             $old = $ProgressPreference; $ProgressPreference = 'SilentlyContinue'
             Invoke-WebRequest -Uri "$Base/$Name" -OutFile $part -UseBasicParsing
@@ -77,8 +84,7 @@ function Get-Asset {
 # Unpacks a zip; tar.exe (built into Windows 10 1803+) is many times faster than Expand-Archive.
 function Expand-Zip([string]$Zip, [string]$Into) {
     if (Get-Command tar.exe -ErrorAction SilentlyContinue) {
-        & tar.exe -xf $Zip -C $Into
-        if ($LASTEXITCODE -eq 0) { return }
+        if ((Invoke-Native { & tar.exe -xf $Zip -C $Into }) -eq 0) { return }
         Write-Host '      (tar.exe could not unpack it; trying Expand-Archive instead)'
     }
     Expand-Archive -Path $Zip -DestinationPath $Into -Force
@@ -131,7 +137,7 @@ function Show-ErrorLog {
     Get-Content (Join-Path $MysqlHome 'mysql-error.log') -Tail 20 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "         $_" }
     Write-Host '       Show this to your tutor.'
 }
-# Runs a worker script in this window: the local copy when MIS781_LOCAL_SCRIPTS
+# Returns the text of a worker script: the local copy when MIS781_LOCAL_SCRIPTS
 # points at a checkout (the Actions test), otherwise the published one.
 function Get-Worker([string]$Name) {
     if ($env:MIS781_LOCAL_SCRIPTS -and (Test-Path (Join-Path $env:MIS781_LOCAL_SCRIPTS $Name))) {
@@ -147,7 +153,7 @@ function Get-Worker([string]$Name) {
 $Ours = Test-Path (Join-Path $MysqlHome 'bin\mysqld.exe')
 $legacyExe = Get-ChildItem 'C:\Program Files\MySQL\MySQL Server *\bin\mysqld.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
 $legacySvc = Get-Service -Name 'MySQL*' -ErrorAction SilentlyContinue | Where-Object Name -notmatch 'Router' | Select-Object -First 1
-$Existing = ''        # description of a server that is not ours, when one is used
+$Existing = ''        # the legacy server or an other server, when Install uses it instead of ours
 $ExistingClient = $null
 $StorePassword = $true
 if (-not $Ours -and $legacyExe -and $legacySvc) {
@@ -179,12 +185,15 @@ if (-not $Ours -and $legacyExe -and $legacySvc) {
 $MysqlClient = Join-Path $MysqlHome 'bin\mysql.exe'
 $Mysqladmin  = Join-Path $MysqlHome 'bin\mysqladmin.exe'
 if ($Existing) {
-    Write-Host "[1/5] MySQL Server already installed: $Existing. Using it, nothing downloaded."
+    Write-Host "[1/5] MySQL Server already on this PC: $Existing. Using it, nothing downloaded."
     $MysqlClient = $ExistingClient
     if ($MysqlClient) { Write-Host "      Command-line client: $MysqlClient" }
-    else { Write-Host '      (No mysql command-line client found next to it; the Employees data cannot be loaded by this script.)' }
+    else { Write-Host '      No mysql command-line client was found next to it, so this script cannot load the Employees data. Show this to your tutor.' }
 } elseif ($Ours) {
-    $ver = if ((& (Join-Path $MysqlHome 'bin\mysqld.exe') --version 2>$null | Out-String) -match 'Ver \S+') { $Matches[0] } else { 'version unknown' }
+    $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    $verOut = & (Join-Path $MysqlHome 'bin\mysqld.exe') --version 2>&1 | Out-String
+    $ErrorActionPreference = $prev
+    $ver = if ($verOut -match 'Ver \S+') { $Matches[0] } else { 'version unknown' }
     Write-Host "[1/5] MySQL Server already unpacked in $MysqlHome ($ver)."
 } else {
     Write-Host '[1/5] MySQL Server 26.10.0'
@@ -196,8 +205,10 @@ if ($Existing) {
         Write-Host '      Installing the Microsoft Visual C++ runtime (MySQL Server needs it).'
         Write-Host '      Windows will ask you to allow it (click Yes).'
         $vc = Join-Path $DL 'vc_redist.x64.exe'
-        if (Get-Command curl.exe -ErrorAction SilentlyContinue) { & curl.exe -# -fL -o $vc $VcRedist }
-        else { Invoke-WebRequest -Uri $VcRedist -OutFile $vc -UseBasicParsing }
+        if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
+            $rc = Invoke-Native { & curl.exe -# -fL -o $vc $VcRedist }
+            if ($rc -ne 0) { throw "Download of the Visual C++ runtime failed (curl exit code $rc). Check your internet connection and run this again." }
+        } else { Invoke-WebRequest -Uri $VcRedist -OutFile $vc -UseBasicParsing }
         Unblock-File $vc -ErrorAction SilentlyContinue
         try {
             $p = Start-Process -FilePath $vc -ArgumentList '/install', '/quiet', '/norestart' -Verb RunAs -Wait -PassThru
@@ -219,7 +230,8 @@ if ($Existing) {
         Copy-Item (Join-Path $unpacked '*') $MysqlHome -Recurse -Force
         Remove-Item $unpacked -Recurse -Force
     } elseif ((Test-Path $MysqlHome) -and (Get-ChildItem $MysqlHome -Force | Select-Object -First 1) -and
-              -not (Select-String -Path (Join-Path $MysqlHome 'my.ini') -Pattern 'written by install.ps1' -Quiet -ErrorAction SilentlyContinue)) {
+              -not (Select-String -Path (Join-Path $MysqlHome 'my.ini') -Pattern 'written by install.ps1' -Quiet -ErrorAction SilentlyContinue) -and
+              -not ((Test-Path (Join-Path $MysqlHome 'bin\mysqld.exe')) -and -not (Test-Path (Join-Path $MysqlHome 'my.ini')))) {
         # A C:\Users\<you>\mysql folder that is not ours (someone's own files): never delete it.
         Remove-Item $unpacked -Recurse -Force
         Write-Host "ERROR: a folder called $MysqlHome already exists and was not made by this installer."
@@ -236,18 +248,18 @@ if ($Existing) {
 # Server settings. Only this PC can connect (bind-address), data lives in
 # C:\Users\<you>\mysql\data, errors go to mysql-error.log in the same folder.
 # Forward slashes: in a MySQL option file a backslash is an escape character.
-$home_ = $MysqlHome -replace '\\', '/'
+$iniHome = $MysqlHome -replace '\\', '/'
 if (-not $Existing -and -not (Test-Path (Join-Path $MysqlHome 'my.ini'))) {
     $ini = @"
 # MySQL Server settings for MIS781 (written by install.ps1)
 [mysqld]
-basedir="$home_"
-datadir="$home_/data"
+basedir="$iniHome"
+datadir="$iniHome/data"
 port=3306
 bind-address=127.0.0.1
 mysqlx-bind-address=127.0.0.1
-log-error="$home_/mysql-error.log"
-pid-file="$home_/mysqld.pid"
+log-error="$iniHome/mysql-error.log"
+pid-file="$iniHome/mysqld.pid"
 
 [client]
 port=3306
@@ -258,7 +270,7 @@ port=3306
 # ---- 2. First-time setup: create the data folder ----------------------------
 $NewServer = $false
 if ($Existing) {
-    Write-Host '[2/5] Skipped (using the existing server).'
+    Write-Host '[2/5] Skipped (using the server already on this PC).'
 } elseif (Test-Path (Join-Path $MysqlHome 'data\mysql')) {
     Write-Host "[2/5] Database folder already set up ($MysqlHome\data)."
 } else {
@@ -277,7 +289,7 @@ if ($Existing) {
 
 # ---- 3. Start the server now and at every logon (Task Scheduler) ------------
 if ($Existing) {
-    Write-Host '[3/5] Skipped (the existing server manages itself).'
+    Write-Host '[3/5] Skipped (the server already on this PC manages itself).'
 } else {
     Write-Host '[3/5] Starting MySQL Server (it will also start automatically when you log in).'
     # A logon task that runs as you, no administrator rights involved. The task
@@ -286,13 +298,14 @@ if ($Existing) {
     $launcher = Join-Path $MysqlHome 'start-mysqld.vbs'
     $vbs = "Set sh = CreateObject(`"WScript.Shell`")`r`n" +
            "sh.Run `"`"`"$MysqlHome\bin\mysqld.exe`"`" --defaults-file=`"`"$MysqlHome\my.ini`"`"`", 0, False`r`n"
-    [IO.File]::WriteAllText($launcher, $vbs, [Text.ASCIIEncoding]::new())
+    [IO.File]::WriteAllText($launcher, $vbs, [Text.Encoding]::Unicode)   # wscript reads UTF-16 with a BOM, so any profile path works
     $wscript = Join-Path $env:SystemRoot 'System32\wscript.exe'
     if (Test-Path $wscript) {
         $action = New-ScheduledTaskAction -Execute $wscript -Argument "//B //Nologo `"$launcher`"" -WorkingDirectory $MysqlHome
     } else {
+        $q = $MysqlHome -replace "'", "''"
         $action = New-ScheduledTaskAction -Execute 'powershell.exe' -WorkingDirectory $MysqlHome `
-                  -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -Command `"Start-Process -FilePath '$MysqlHome\bin\mysqld.exe' -ArgumentList '--defaults-file=\`"$MysqlHome\my.ini\`"' -WindowStyle Hidden`""
+                  -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -Command `"Start-Process -FilePath '$q\bin\mysqld.exe' -ArgumentList '--defaults-file=\`"$q\my.ini\`"' -WindowStyle Hidden`""
     }
     $me = "$env:USERDOMAIN\$env:USERNAME"
     $trigger   = New-ScheduledTaskTrigger -AtLogOn -User $me
@@ -344,7 +357,7 @@ if ($NewServer) {
         if ($Unattended) { throw 'Set MIS781_ROOT_PASSWORD for an unattended install.' }
         Write-Host ''
         Write-Host "      Choose a password for the MySQL 'root' account. Workbench will have it saved,"
-        Write-Host '      but you will need it in the mysql command line and if you ever reinstall.'
+        Write-Host '      but you will need it in the mysql command line and if you ever install again.'
         Write-Host "      >>> WRITE IT DOWN. If you forget it, the setup menu can reset it. <<<"
         while (-not $pw) {
             $a = Read-Secret '      New root password (typing is hidden)'
@@ -383,11 +396,11 @@ $ServerOk = $false
 if ($MysqlClient -and (Invoke-Sql 'SELECT 1') -eq '1') {
     $ServerOk = $true
 } elseif (-not $Existing) {
-    Write-Host 'ERROR: that root password did not work. Run the installer again and type it carefully.'
+    Write-Host 'ERROR: that root password did not work. Run the setup line again and type it carefully.'
     Write-Host "       Forgotten it? Run the setup line again and choose 'Reset the MySQL root password'."
     return
 } else {
-    if ($MysqlClient) { Write-Host '      WARNING: could not log in to the existing server as root with that password.' }
+    if ($MysqlClient) { Write-Host '      WARNING: could not log in to that server as root with that password.' }
     Write-Host '      Workbench and the data files are still set up below; load the data later from the setup menu.'
 }
 
@@ -414,8 +427,8 @@ if ($wbExisting) {
     try {
         $p = Start-Process msiexec.exe -ArgumentList '/i', "`"$msi`"", '/qn', '/norestart' -Verb RunAs -Wait -PassThru
         if ($p.ExitCode -in 0, 3010) { Write-Host "      Installed ($(Get-WorkbenchInstall))." }
-        elseif ($p.ExitCode -eq 1602) { Write-Host '      Skipped: the installer was cancelled.' }
-        else { Write-Host "      WARNING: the Workbench installer returned code $($p.ExitCode)." }
+        elseif ($p.ExitCode -eq 1602) { Write-Host '      Skipped because the installer was cancelled. Run the setup line again (Install) to retry.' }
+        else { Write-Host "      WARNING: the Workbench installer returned code $($p.ExitCode). Try double-clicking $msi; if that fails too, show this to your tutor." }
     } catch {
         Write-Host '      Skipped: Windows did not allow it. Workbench can be installed later by double-clicking'
         Write-Host "      $msi, or run the setup line again (Install)."
@@ -426,9 +439,9 @@ if ($wbExisting) {
 if (Test-Path (Join-Path $Data 'test_db-master\employees.sql')) {
     Write-Host "[5/5] Employees database files already at $Data\test_db-master."
 } else {
-    Write-Host '[5/5] Employees sample database'
+    Write-Host '[5/5] Employees files'
     $dbZipPath = Get-Asset $DbZip '~35MB'
-    Expand-Archive -Path $dbZipPath -DestinationPath $Data -Force
+    Expand-Zip $dbZipPath $Data
     Write-Host "      Files at $Data\test_db-master (employees.sql and the .dump files)."
 }
 
@@ -439,7 +452,7 @@ function Test-EmployeesComplete {
 }
 $Imported = $false
 if (-not $ServerOk) {
-    Write-Host '      Data not loaded (no working connection to the server, see above).'
+    Write-Host '      Employees data not loaded (no working connection to the server, see above).'
 } elseif (Test-EmployeesComplete) {
     Write-Host "      The 'employees' database is already loaded (300024 employees)."
     $Imported = $true
@@ -452,9 +465,13 @@ if (-not $ServerOk) {
     if ($ans -match '^[Nn]') {
         Write-Host "      Skipped. Load it later from the setup menu ('Load the Employees database')."
     } else {
+        $importWasSet = [bool]$env:MIS781_IMPORT
         $env:MIS781_CNF = $cnf; $env:MIS781_MYSQL = $MysqlClient; $env:MIS781_IMPORT = 'y'
         try { & ([scriptblock]::Create((Get-Worker 'import-employees.ps1'))) }
-        finally { Remove-Item Env:\MIS781_CNF, Env:\MIS781_MYSQL -ErrorAction SilentlyContinue }
+        finally {
+            Remove-Item Env:\MIS781_CNF, Env:\MIS781_MYSQL -ErrorAction SilentlyContinue
+            if (-not $importWasSet) { Remove-Item Env:\MIS781_IMPORT -ErrorAction SilentlyContinue }
+        }
         $Imported = Test-EmployeesComplete
     }
 }
@@ -476,7 +493,7 @@ Write-Host ''
 Write-Host 'Checking what was installed...'
 $ok = $true
 if ($Existing) {
-    if ($ServerOk) { Write-Host "  MySQL Server      OK  (existing: $Existing)" } else { Write-Host "  MySQL Server      existing ($Existing), but root login failed" }
+    if ($ServerOk) { Write-Host "  MySQL Server      OK  (already on this PC: $Existing)" } else { Write-Host "  MySQL Server      already on this PC ($Existing), but root login failed" }
 } elseif (Get-OurServerProcess) {
     Write-Host "  MySQL Server      OK  (running, 127.0.0.1:3306, files in $MysqlHome)"
 } else {
@@ -493,7 +510,7 @@ if (-not $Existing) {
 if ($Unattended) {
     $problems = @()
     if (-not $ok) { $problems += 'server or Workbench missing' }
-    if ($env:MIS781_IMPORT -and -not $Imported) { $problems += 'Employees data incomplete' }
+    if ($env:MIS781_IMPORT -match '^[Yy]' -and -not $Imported) { $problems += 'Employees data incomplete' }
     if ($problems) { throw "Unattended install incomplete: $($problems -join '; ')" }
     Write-Host 'Unattended install complete.'
     return
@@ -503,7 +520,7 @@ if ($ok) {
     Write-Host 'Done. Next:'
     Write-Host "  1. Open MySQL Workbench (Start menu) and click the 'MIS781' connection."
     Write-Host '     If it asks for a password, use your MySQL root password and let it save it.'
-    Write-Host "  2. Refresh the SCHEMAS list: you should see 'employees'. Try:"
+    Write-Host "  2. Refresh the SCHEMAS list and you should see 'employees'. Try:"
     Write-Host '       USE employees; SHOW TABLES; SELECT COUNT(*) FROM employees;'
     if (-not $Existing) { Write-Host "  3. Open a NEW PowerShell window if you want to use the 'mysql' command directly." }
 } else {
