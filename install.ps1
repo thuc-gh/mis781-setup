@@ -5,7 +5,9 @@
 # Downloads MySQL Server and MySQL Workbench, unpacks the Employees sample
 # database, then opens the two installers for you to click through (they need
 # administrator approval and a root password you choose, so they cannot be
-# fully automated). Safe to re-run: anything already installed is skipped.
+# fully automated). Once MySQL Configurator is finished it asks for that
+# password and loads the Employees data. Safe to re-run: anything already
+# installed is skipped.
 
 $ErrorActionPreference = 'Stop'
 $Base    = 'https://github.com/thuc-gh/mis781-setup/releases/download/v2026-t3'
@@ -108,6 +110,20 @@ if ((Test-MySqlServer) -or (Test-VcRedist)) {
     if ($p.ExitCode -notin 0, 1638, 3010) { Write-Host "      WARNING: the runtime installer returned code $($p.ExitCode). Continuing anyway." }
 }
 
+# Runs import-employees.ps1 in this window (local copy for the Actions test,
+# otherwise the published one). It asks for the root password itself.
+function Invoke-ImportScript {
+    $importScript = if ($env:MIS781_LOCAL_SCRIPTS -and (Test-Path (Join-Path $env:MIS781_LOCAL_SCRIPTS 'import-employees.ps1'))) {
+        Get-Content (Join-Path $env:MIS781_LOCAL_SCRIPTS 'import-employees.ps1') -Raw
+    } else {
+        (Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/thuc-gh/mis781-setup/main/import-employees.ps1' -UseBasicParsing).Content
+    }
+    & ([scriptblock]::Create($importScript))
+}
+function Get-MySqlService {
+    Get-Service -Name 'MySQL*' -ErrorAction SilentlyContinue | Where-Object Name -notmatch 'Router' | Select-Object -First 1
+}
+
 # ---- 4. MySQL Server and Workbench installers -------------------------------
 # Normal use: the installers open and the student clicks through them.
 # Unattended use (lab PCs, the Actions test): set MIS781_ROOT_PASSWORD and the
@@ -155,7 +171,8 @@ if ($serverPath) {
         Write-Host '      At the end, leave "Run MySQL Configurator" ticked and click Finish.'
         Write-Host '      In MySQL Configurator: keep "Development Computer", port 3306, and set a root password.'
         Write-Host '      >>> WRITE DOWN THE ROOT PASSWORD YOU SET. There is no recovery. <<<'
-        Write-Host '      Keep "Configure MySQL Server as a Windows Service" ticked, then Execute.'
+        Write-Host '      Keep "Configure MySQL Server as a Windows Service" ticked, then Execute, Next, Finish.'
+        Write-Host '      Leave this window open: it loads the Employees data once Configurator is finished.'
         Start-Process msiexec.exe -ArgumentList '/i', "`"$serverPath`"" -Wait
         Write-Host '      Server installer closed (MySQL Configurator may still be open: finish it).'
     }
@@ -175,14 +192,37 @@ if ($wbPath) {
     Write-Host '      MySQL Workbench already installed.'
 }
 
-# Unattended runs also load the data, like the macOS installer does.
-if ($Unattended -and $env:MIS781_IMPORT) {
-    $importScript = if ($env:MIS781_LOCAL_SCRIPTS -and (Test-Path (Join-Path $env:MIS781_LOCAL_SCRIPTS 'import-employees.ps1'))) {
-        Get-Content (Join-Path $env:MIS781_LOCAL_SCRIPTS 'import-employees.ps1') -Raw
-    } else {
-        (Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/thuc-gh/mis781-setup/main/import-employees.ps1' -UseBasicParsing).Content
+# ---- Load the Employees data, like the macOS installer does -----------------
+# Unattended runs load it when MIS781_IMPORT is set. Interactive runs wait for
+# the student to finish MySQL Configurator (the service appears when they click
+# Execute and the root password is applied just after it; Configurator closes
+# on Finish), then run the import, which asks for that password.
+$Imported = $false
+if ($Unattended) {
+    if ($env:MIS781_IMPORT) { Invoke-ImportScript; $Imported = $true }
+} else {
+    $svc = Get-MySqlService
+    if ($serverPath -and -not ($svc -and $svc.Status -eq 'Running' -and -not (Get-Process -Name 'mysql_configurator' -ErrorAction SilentlyContinue))) {
+        Write-Host ''
+        Write-Host '      Waiting for you to finish MySQL Configurator (Execute, Next, Finish).'
+        Write-Host -NoNewline '      Press Ctrl+C to stop waiting; the data can be loaded later from the setup menu'
+        $deadline = (Get-Date).AddMinutes(20)
+        while ((Get-Date) -lt $deadline) {
+            $svc = Get-MySqlService
+            if ($svc -and $svc.Status -eq 'Running' -and -not (Get-Process -Name 'mysql_configurator' -ErrorAction SilentlyContinue)) { break }
+            Start-Sleep -Seconds 5
+            Write-Host -NoNewline '.'
+        }
+        Write-Host ''
+        Start-Sleep -Seconds 3   # let the server finish starting up
     }
-    & ([scriptblock]::Create($importScript))
+    if ($svc -and $svc.Status -eq 'Running') {
+        Write-Host ''
+        Write-Host '      MySQL Server is running. Loading the Employees database now.'
+        Write-Host ''
+        Invoke-ImportScript
+        $Imported = $true
+    }
 }
 
 # ---- Summary ----------------------------------------------------------------
@@ -213,9 +253,15 @@ if ($Unattended) {
 }
 
 Write-Host ''
-Write-Host 'You still need to do these yourself:'
-Write-Host '  1. If MySQL Configurator is still open, finish it (root password, Windows service, Execute).'
-Write-Host '  2. Load the Employees database (takes a few minutes):'
-Write-Host '       irm https://raw.githubusercontent.com/thuc-gh/mis781-setup/main/import-employees.ps1 | iex'
-Write-Host '  3. Open MySQL Workbench, connect to the local server as root, refresh the schemas list:'
-Write-Host '     you should see "employees".'
+if ($Imported) {
+    Write-Host 'Next: open MySQL Workbench, connect to the local server as root (host 127.0.0.1, port 3306),'
+    Write-Host 'refresh the schemas list and you should see "employees".'
+    Write-Host 'If the load above reported a problem, run the setup line again and choose "Load the Employees database".'
+} else {
+    Write-Host 'You still need to do these yourself:'
+    Write-Host '  1. If MySQL Configurator is still open, finish it (root password, Windows service, Execute, Finish).'
+    Write-Host '  2. Run the setup line again and choose "Load the Employees database" (takes a few minutes):'
+    Write-Host '       irm https://raw.githubusercontent.com/thuc-gh/mis781-setup/main/setup.ps1 | iex'
+    Write-Host '  3. Open MySQL Workbench, connect to the local server as root, refresh the schemas list:'
+    Write-Host '     you should see "employees".'
+}

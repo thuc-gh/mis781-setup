@@ -46,7 +46,7 @@ The menu only shows actions that make sense for your computer:
 
 | Action | What it does |
 |---|---|
-| **Install everything that is missing** | MySQL Server, MySQL Workbench, the Employees files and the Employees data. Whatever is already there is kept. Asks you for a **new MySQL root password** (write it down). On Windows it opens the two Oracle installers for you to click through. |
+| **Install everything that is missing** | MySQL Server, MySQL Workbench, the Employees files and the Employees data. Whatever is already there is kept. Asks you for a **new MySQL root password** (write it down). On Windows it opens the two Oracle installers for you to click through, then loads the data once you have finished MySQL Configurator. |
 | **Load the Employees database** | Loads the Employees data into your server (a few minutes). Asks for your root password. |
 | **Reset the MySQL root password** | For when you have forgotten it. Gives `root` a new password and keeps every database. |
 | **Remove MySQL Server** | Takes the server and all its databases off, keeps Workbench and the Employees files, so a fresh Install is quick. |
@@ -63,7 +63,7 @@ Anything that deletes something shows you the exact list first and only goes ahe
 1. **MySQL Server**: accept the defaults. On the last page leave **Run MySQL Configurator** ticked. In MySQL Configurator keep *Development Computer* and port 3306, set a **root password** (write it down), keep *Configure MySQL Server as a Windows Service* ticked, then **Execute**.
 2. **MySQL Workbench**: Next, Complete, Install, Finish.
 
-Then run the setup line again and choose **Load the Employees database**.
+Leave the PowerShell window open. When you click **Finish** in MySQL Configurator the script notices, asks for the root password you just set and loads the Employees data (a few minutes). If you closed the window or the load reported a problem, run the setup line again and choose **Load the Employees database**.
 
 ## Check it worked
 
