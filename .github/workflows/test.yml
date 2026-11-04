@@ -70,16 +70,6 @@ jobs:
   windows:
     runs-on: windows-latest
     timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        # Diagnostic: MySQL Configurator's CLI may choke on a double quote in the password.
-        include:
-          - name: quote-in-password
-            password: "Te'st\\Pw 9\"#!x"
-          - name: no-quote
-            password: "Te'st\\Pw 9#!x"
-    name: windows (${{ matrix.name }})
     steps:
       - uses: actions/checkout@v4
       - name: Parse the PowerShell scripts (syntax check)
@@ -109,14 +99,14 @@ jobs:
       - name: Install (unattended) and import, the way a student runs it (as text through iex)
         shell: powershell
         env:
-          MIS781_ROOT_PASSWORD: ${{ matrix.password }}
+          MIS781_ROOT_PASSWORD: ${{ env.TEST_PASSWORD }}
           MIS781_IMPORT: y
           MIS781_LOCAL_SCRIPTS: ${{ github.workspace }}
         run: |
           $ErrorActionPreference = 'Stop'
           Get-Content .\install.ps1 -Raw | Invoke-Expression
       - name: Where did everything go (diagnostics)
-        if: always()
+        if: failure()
         shell: powershell
         run: |
           Get-Service 'MySQL*' -ErrorAction SilentlyContinue | Format-Table Name, Status, StartType
@@ -127,8 +117,6 @@ jobs:
           Get-ChildItem "$env:TEMP" -Filter '*onfigurator*' -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "--- $($_.FullName)"; Get-Content $_.FullName -Tail 40 }
       - name: Check server, password, data and network binding
         shell: powershell
-        env:
-          TEST_PASSWORD: ${{ matrix.password }}
         run: |
           $ErrorActionPreference = 'Stop'
           $M = 'C:\Program Files\MySQL\MySQL Server 26.10\bin\mysql.exe'
@@ -143,7 +131,7 @@ jobs:
       - name: Re-run changes nothing
         shell: powershell
         env:
-          MIS781_ROOT_PASSWORD: ${{ matrix.password }}
+          MIS781_ROOT_PASSWORD: ${{ env.TEST_PASSWORD }}
           MIS781_IMPORT: y
           MIS781_LOCAL_SCRIPTS: ${{ github.workspace }}
         run: |

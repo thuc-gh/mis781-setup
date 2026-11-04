@@ -123,8 +123,11 @@ if ($serverPath) {
                Select-Object -First 1 -ExpandProperty FullName
         if (-not $cfg) { throw 'mysql_configurator.exe not found after installing MySQL Server' }
         Write-Host "      Configuring the server with $cfg ..."
-        # Root password via the MYSQL_PWD environment variable, never on the command line.
-        $env:MYSQL_PWD = $env:MIS781_ROOT_PASSWORD
+        # Configurator's command line mangles quotes, backslashes and # in the password
+        # (tested: a " makes it abort with "Illegal characters in path"), so configure
+        # with a throwaway random password and set the real one through mysql.exe.
+        $tmpPw = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 24 | ForEach-Object { [char]$_ })
+        $env:MYSQL_PWD = $tmpPw
         try {
             $p = Start-Process -FilePath $cfg -ArgumentList '--console', '--action=configure', '--server-type=Developer', `
                  '--port=3306', '--configure-as-windows-service=true', '--windows-service-auto-start=true', `
@@ -135,6 +138,17 @@ if ($serverPath) {
         $svc = Get-Service -Name 'MySQL*' -ErrorAction SilentlyContinue | Where-Object Name -notmatch 'Router' | Select-Object -First 1
         if (-not $svc) { throw 'MySQL Configurator did not create the MySQL service (see its output above).' }
         if ($svc.Status -ne 'Running') { Start-Service $svc.Name }
+        # Now the real root password. SQL string literal: escape \ and ' so any password works.
+        $m = Get-ChildItem 'C:\Program Files\MySQL\MySQL Server *\bin\mysql.exe' | Select-Object -First 1 -ExpandProperty FullName
+        $pwSql = ($env:MIS781_ROOT_PASSWORD -replace '\\','\\') -replace "'","\'"
+        $sqlFile = Join-Path $env:TEMP ("mis781-" + [guid]::NewGuid().ToString('N') + ".sql")
+        [IO.File]::WriteAllText($sqlFile, "ALTER USER 'root'@'localhost' IDENTIFIED BY '$pwSql';`nFLUSH PRIVILEGES;`n", [Text.UTF8Encoding]::new($false))
+        $env:MYSQL_PWD = $tmpPw
+        try {
+            $p = Start-Process -FilePath $m -ArgumentList '-h', '127.0.0.1', '-u', 'root' -RedirectStandardInput $sqlFile -NoNewWindow -Wait -PassThru
+        } finally { Remove-Item Env:\MYSQL_PWD -ErrorAction SilentlyContinue; Remove-Item $sqlFile -Force -ErrorAction SilentlyContinue; Remove-Variable tmpPw, pwSql }
+        if ($p.ExitCode -ne 0) { throw "Could not set the root password (mysql.exe exit code $($p.ExitCode))" }
+        Write-Host '      Root password set.'
         Write-Host "      Service $($svc.Name) is $((Get-Service $svc.Name).Status)."
     } else {
         Write-Host '      Opening the MySQL Server installer. Click through it with the defaults.'
@@ -188,7 +202,9 @@ if ($Unattended) {
     if ($env:MIS781_IMPORT) {
         $m = Get-ChildItem 'C:\Program Files\MySQL\MySQL Server *\bin\mysql.exe' -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
         $env:MYSQL_PWD = $env:MIS781_ROOT_PASSWORD
-        try { $n = (& $m -h 127.0.0.1 -u root -N -e 'SELECT COUNT(*) FROM employees.employees' 2>$null | Out-String).Trim() } finally { Remove-Item Env:\MYSQL_PWD -ErrorAction SilentlyContinue }
+        $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+        try { $n = (& $m -h 127.0.0.1 -u root -N -e 'SELECT COUNT(*) FROM employees.employees' 2>&1 | Where-Object { $_ -is [string] } | Out-String).Trim() }
+        finally { $ErrorActionPreference = $prevEap; Remove-Item Env:\MYSQL_PWD -ErrorAction SilentlyContinue }
         if ($n -ne '300024') { $problems += "employees table has '$n' rows, expected 300024" }
     }
     if ($problems) { throw "Unattended install incomplete: $($problems -join '; ')" }
