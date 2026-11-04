@@ -69,7 +69,7 @@ SELECT COUNT(*) FROM employees;
 
 **Forgot your MySQL root password.** There is no recovery. On macOS run the [uninstaller](#uninstalling-mysql) and then the installer again. On Windows uninstall *MySQL Server 26.10* from Settings → Apps, delete `C:\ProgramData\MySQL`, and run the installer again.
 
-**macOS: "something is already using MySQL's port 3306".** You already have a MySQL from Homebrew, MAMP, XAMPP, Docker or an earlier Oracle installer. Either use that one (point Workbench at it) or remove it with the [uninstaller](#uninstalling-mysql) and run the installer again.
+**macOS: you already have MySQL.** If a MySQL server is already installed or running (Homebrew, MAMP, XAMPP, Docker, an earlier Oracle installer), the installer leaves it alone and uses it: it asks for that server's root password, skips the server download, and still sets up Workbench and the data. If you would rather start clean, remove the old one with the [uninstaller](#uninstalling-mysql) first.
 
 **macOS: `permission denied: .zshrc`.** The installer adds one line to `~/.zshrc` and that file is not writable by you, almost always because something was run with `sudo` earlier. Run this (it asks for your Mac password), then run the installer again:
 
