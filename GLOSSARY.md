@@ -29,7 +29,7 @@ Any MySQL Server not installed by this unit: Homebrew, the Oracle package instal
 _Avoid_: existing server, foreign server, third-party MySQL
 
 **Install**:
-The action that puts in place whatever is missing from the full set: server, Workbench, Employees files and Employees data. Re-running it on a complete computer changes nothing.
+The action that puts in place whatever is missing from the full set: server, Workbench, Workbench connection, Employees files and Employees data. Re-running it on a complete computer changes nothing.
 _Avoid_: full install, repair, finish install (all are this one action)
 
 **Employees files**:
@@ -53,8 +53,16 @@ The action that takes MySQL Server and all its databases off the computer and le
 _Avoid_: uninstall (ambiguous between the two removal actions), clean, reinstall
 
 **Remove everything**:
-The action that takes off the server, Workbench, its saved connections, the Employees files and the downloaded installers.
+The action that takes off the server, Workbench, its saved connections and saved password, the Employees files and the downloaded installers.
 _Avoid_: full uninstall, purge, wipe
+
+**Workbench connection**:
+The tile in MySQL Workbench that opens a session to one server. Install gives Workbench one called `MIS781` (host 127.0.0.1, port 3306, user root) when it has no connection to that server yet; a student's own connections are never changed or removed, except by Remove everything.
+_Avoid_: profile, bookmark, saved server, connection tile
+
+**Saved password**:
+The root password that Install and Reset password keep in the macOS keychain for the Workbench connection, so it opens without a prompt. Windows has none: Workbench asks once and can save it itself. Remove server leaves it; Remove everything deletes it.
+_Avoid_: stored credential, keychain entry, remembered password
 
 **Destructive action**:
 An action that deletes files or databases, or changes something the student cannot get back without a password they may not know: remove server, remove everything, load data over an existing Employees data, reset password.

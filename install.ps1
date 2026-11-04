@@ -225,6 +225,20 @@ if ($Unattended) {
     }
 }
 
+# ---- Workbench connection ---------------------------------------------------
+# A ready-made "MIS781" connection in Workbench; Workbench asks for the root
+# password the first time and can save it.
+if (Test-Workbench) {
+    Write-Host ''
+    $wbScript = if ($env:MIS781_LOCAL_SCRIPTS -and (Test-Path (Join-Path $env:MIS781_LOCAL_SCRIPTS 'workbench-connection.ps1'))) {
+        Get-Content (Join-Path $env:MIS781_LOCAL_SCRIPTS 'workbench-connection.ps1') -Raw
+    } else {
+        (Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/thuc-gh/mis781-setup/main/workbench-connection.ps1' -UseBasicParsing).Content
+    }
+    try { & ([scriptblock]::Create($wbScript)) }
+    catch { Write-Host "  Could not set up the Workbench connection ($($_.Exception.Message)). Add one by hand in Workbench: host 127.0.0.1, port 3306, user root." }
+}
+
 # ---- Summary ----------------------------------------------------------------
 Write-Host ''
 Write-Host 'Checking what was installed...'
@@ -262,6 +276,6 @@ if ($Imported) {
     Write-Host '  1. If MySQL Configurator is still open, finish it (root password, Windows service, Execute, Finish).'
     Write-Host '  2. Run the setup line again and choose "Load the Employees database" (takes a few minutes):'
     Write-Host '       irm https://raw.githubusercontent.com/thuc-gh/mis781-setup/main/setup.ps1 | iex'
-    Write-Host '  3. Open MySQL Workbench, connect to the local server as root, refresh the schemas list:'
-    Write-Host '     you should see "employees".'
+    Write-Host '  3. Open MySQL Workbench, click the "MIS781" connection, type your root password and let it'
+    Write-Host '     save it. Refresh the schemas list: you should see "employees".'
 }

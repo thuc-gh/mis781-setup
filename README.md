@@ -46,28 +46,28 @@ The menu only shows actions that make sense for your computer:
 
 | Action | What it does |
 |---|---|
-| **Install everything that is missing** | MySQL Server, MySQL Workbench, the Employees files and the Employees data. Whatever is already there is kept. Asks you for a **new MySQL root password** (write it down). On Windows it opens the two Oracle installers for you to click through, then loads the data once you have finished MySQL Configurator. |
+| **Install everything that is missing** | MySQL Server, MySQL Workbench, the Employees files and the Employees data. Whatever is already there is kept. Asks you for a **new MySQL root password** (write it down). Gives Workbench a ready-made **MIS781** connection; on macOS the password is saved too, so Workbench connects without asking. On Windows it opens the two Oracle installers for you to click through, then loads the data once you have finished MySQL Configurator. |
 | **Load the Employees database** | Loads the Employees data into your server (a few minutes). Asks for your root password. |
-| **Reset the MySQL root password** | For when you have forgotten it. Gives `root` a new password and keeps every database. |
+| **Reset the MySQL root password** | For when you have forgotten it. Gives `root` a new password and keeps every database. On macOS the password saved for Workbench is updated too. |
 | **Remove MySQL Server** | Takes the server and all its databases off, keeps Workbench and the Employees files, so a fresh Install is quick. |
-| **Remove everything** | Also removes Workbench, its saved connections, the `MIS781` folder and the downloaded installers. |
+| **Remove everything** | Also removes Workbench, its saved connections and saved password, the `MIS781` folder and the downloaded installers. |
 
 Anything that deletes something shows you the exact list first and only goes ahead after you type `yes`. Reset and a reload ask for a `y`. On Windows, Reset and the two Remove actions open an administrator window by themselves (Windows asks you to allow it).
 
 ### What Install does
 
-**macOS.** Unpacks MySQL Server into `~/mysql`, creates the database folder, sets your root password and starts the server. The server starts again by itself every time you log in and only listens on this Mac (127.0.0.1). Puts MySQL Workbench into Applications. Unpacks the Employees files into `~/MIS781/test_db-master` and loads them. No admin password, nothing to click through, about five minutes.
+**macOS.** Unpacks MySQL Server into `~/mysql`, creates the database folder, sets your root password and starts the server. The server starts again by itself every time you log in and only listens on this Mac (127.0.0.1). Puts MySQL Workbench into Applications, gives it a connection called **MIS781** and saves your root password in the keychain, so Workbench connects without asking. Unpacks the Employees files into `~/MIS781/test_db-master` and loads them. No admin password, nothing to click through, about five minutes.
 
 **Windows.** Downloads everything, unpacks the Employees files into `C:\Users\<you>\MIS781\test_db-master`, then opens the two Oracle installers (Windows needs you to approve them):
 
 1. **MySQL Server**: accept the defaults. On the last page leave **Run MySQL Configurator** ticked. In MySQL Configurator keep *Development Computer* and port 3306, set a **root password** (write it down), keep *Configure MySQL Server as a Windows Service* ticked, then **Execute**.
 2. **MySQL Workbench**: Next, Complete, Install, Finish.
 
-Leave the PowerShell window open. When you click **Finish** in MySQL Configurator the script notices, asks for the root password you just set and loads the Employees data (a few minutes). If you closed the window or the load reported a problem, run the setup line again and choose **Load the Employees database**.
+Leave the PowerShell window open. When you click **Finish** in MySQL Configurator the script notices, asks for the root password you just set and loads the Employees data (a few minutes). If you closed the window or the load reported a problem, run the setup line again and choose **Load the Employees database**. Workbench also gets a ready-made connection called **MIS781**; it asks for your root password the first time you connect and can save it.
 
 ## Check it worked
 
-Open **MySQL Workbench**, add a connection with host `127.0.0.1`, port `3306`, user `root` and your password, refresh the SCHEMAS list and run:
+Open **MySQL Workbench** and click the **MIS781** connection (on Windows, type your root password the first time and let Workbench save it; on macOS it opens straight away). If there is no MIS781 tile, add a connection with host `127.0.0.1`, port `3306`, user `root` and your password. Refresh the SCHEMAS list and run:
 
 ```sql
 USE employees;
@@ -119,6 +119,7 @@ The setup script calls these; tutors can run them on their own.
 |---|---|---|
 | Install | `zsh -c "$(curl -fsSL https://raw.githubusercontent.com/thuc-gh/mis781-setup/main/install.sh)"` | `irm https://raw.githubusercontent.com/thuc-gh/mis781-setup/main/install.ps1 \| iex` |
 | Load data | `zsh -c "$(curl -fsSL https://raw.githubusercontent.com/thuc-gh/mis781-setup/main/import-employees.sh)"` | `irm https://raw.githubusercontent.com/thuc-gh/mis781-setup/main/import-employees.ps1 \| iex` |
+| Workbench connection | `zsh -c "$(curl -fsSL https://raw.githubusercontent.com/thuc-gh/mis781-setup/main/workbench-connection.sh)"` | `irm https://raw.githubusercontent.com/thuc-gh/mis781-setup/main/workbench-connection.ps1 \| iex` |
 | Remove server | `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/thuc-gh/mis781-setup/main/uninstall-mysql.sh)"` | in Terminal (Admin): `irm https://raw.githubusercontent.com/thuc-gh/mis781-setup/main/uninstall-mysql.ps1 \| iex` |
 
 The removal scripts take `--dry-run` / `-DryRun` (show the list, change nothing) and `--all` / `-All` (remove everything). On Windows pass options as `& ([scriptblock]::Create((irm <url>))) -DryRun`.
@@ -140,6 +141,7 @@ If you would rather not run a script, every file is on the [Releases page](../..
 | `setup.sh` / `setup.ps1` | The one line students run: scans, recommends, runs the chosen action (Reset password lives here) |
 | `install.sh` / `install.ps1` | Install: MySQL Server, Workbench and Employees data; re-running adds only what is missing |
 | `import-employees.sh` / `import-employees.ps1` | Load (or reload) the Employees database |
+| `workbench-connection.sh` / `workbench-connection.ps1` | Give Workbench the ready-made MIS781 connection (and on macOS the saved password); run by Install and, on macOS, Reset |
 | `uninstall-mysql.sh` / `uninstall-mysql.ps1` | Remove MySQL Server; with `--all` / `-All`, remove everything |
 | `.github/workflows/test.yml` | Installs, loads, resets, reinstalls and removes everything on clean macOS and Windows runners through the setup script; run by hand before each trimester |
 | `GLOSSARY.md`, `docs/adr/` | The words the scripts and this README use, and the decisions behind them |

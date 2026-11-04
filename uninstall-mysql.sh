@@ -13,8 +13,8 @@
 #   bash uninstall-mysql.sh            # interactive (asks before deleting)
 #   bash uninstall-mysql.sh --dry-run  # show what would be removed, change nothing
 #   bash uninstall-mysql.sh --yes      # no confirmation prompt (MIS781_CONFIRM=yes does the same)
-#   bash uninstall-mysql.sh --all      # also remove Workbench, its saved connections,
-#                                      # ~/MIS781 and the downloaded installers
+#   bash uninstall-mysql.sh --all      # also remove Workbench, its saved connections and
+#                                      # saved password, ~/MIS781 and the downloaded installers
 #
 # Or straight from GitHub without downloading:
 #   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/thuc-gh/mis781-setup/main/uninstall-mysql.sh)"
@@ -176,21 +176,31 @@ fi
 
 # --- Everything else from this unit (only with --all) ---
 ALL_ITEMS=()
+SAVED_PASSWORDS=()
 if $ALL; then
   for d in "$APPS" "$HOME/Applications"; do
     for app in "$WB_APP" "MySQLWorkbench.app"; do
       [ -d "$d/$app" ] && ALL_ITEMS+=("$d/$app")
     done
   done
+  # Workbench 8 kept its connections under MySQL/Workbench; Workbench 26 keeps
+  # them (and its settings) under "MySQL Workbench".
   [ -e "$HOME/Library/Application Support/MySQL/Workbench" ] && ALL_ITEMS+=("$HOME/Library/Application Support/MySQL/Workbench")
+  [ -e "$HOME/Library/Application Support/MySQL Workbench" ] && ALL_ITEMS+=("$HOME/Library/Application Support/MySQL Workbench")
   [ -e "$HOME/MIS781" ] && ALL_ITEMS+=("$HOME/MIS781")
   for f in mysql-26.10.0-macos15-arm64.tar.gz mysql-workbench-26.10.0-macos-arm64.zip test_db-master.zip; do
     [ -e "$HOME/Downloads/$f" ] && ALL_ITEMS+=("$HOME/Downloads/$f")
   done
-  if [ "${#ALL_ITEMS[@]}" -gt 0 ]; then
+  # The root password that Install saved in the keychain for Workbench (stored by
+  # the MySQL Shell helper as account "root", service "host:port").
+  for svc in 127.0.0.1:3306 localhost:3306; do
+    security find-generic-password -a root -s "$svc" >/dev/null 2>&1 && SAVED_PASSWORDS+=("$svc")
+  done
+  if [ "${#ALL_ITEMS[@]}" -gt 0 ] || [ "${#SAVED_PASSWORDS[@]}" -gt 0 ]; then
     FOUND_ANY=true
-    bold "Found: Workbench, saved connections, Employees files and downloads (removed with --all)"
-    for p in "${ALL_ITEMS[@]}"; do info "$p"; done
+    bold "Found: Workbench, saved connections, saved password, Employees files and downloads (removed with --all)"
+    for p in "${ALL_ITEMS[@]+"${ALL_ITEMS[@]}"}"; do info "$p"; done
+    for s in "${SAVED_PASSWORDS[@]+"${SAVED_PASSWORDS[@]}"}"; do info "keychain: MySQL password for root@$s"; done
   fi
 fi
 
@@ -304,6 +314,13 @@ for p in "${ALL_ITEMS[@]+"${ALL_ITEMS[@]}"}"; do
     run sudo rm -rf "${p:?}"
   fi
 done
+for s in "${SAVED_PASSWORDS[@]+"${SAVED_PASSWORDS[@]}"}"; do
+  if $DRY_RUN; then
+    info "[dry-run] security delete-generic-password -a root -s $s"
+  else
+    security delete-generic-password -a root -s "$s" >/dev/null 2>&1 || true
+  fi
+done
 
 # ---------------------------------------------------------------------------
 # 5. VERIFY
@@ -328,6 +345,12 @@ fi
 for d in "$HOME/mysql" "$HOME_PLIST" /usr/local/mysql /opt/homebrew/var/mysql /usr/local/var/mysql "${ALL_ITEMS[@]+"${ALL_ITEMS[@]}"}"; do
   if [ -e "$d" ]; then
     info "FAIL: $d still exists"
+    OK=false
+  fi
+done
+for s in "${SAVED_PASSWORDS[@]+"${SAVED_PASSWORDS[@]}"}"; do
+  if security find-generic-password -a root -s "$s" >/dev/null 2>&1; then
+    info "FAIL: the saved MySQL password for root@$s is still in the keychain"
     OK=false
   fi
 done

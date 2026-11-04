@@ -356,6 +356,19 @@ else
   esac
 fi
 
+# ---- Workbench connection -----------------------------------------------------
+# A ready-made "MIS781" connection in Workbench and, for our server, the root
+# password in the keychain, so Workbench connects without asking.
+echo
+WB_ARGS=()
+[ -n "$OTHER_MYSQL" ] && WB_ARGS+=(--no-password)
+export MIS781_CNF="$CNF"
+if [ -n "${MIS781_LOCAL_SCRIPTS:-}" ] && [ -f "$MIS781_LOCAL_SCRIPTS/workbench-connection.sh" ]; then
+  zsh "$MIS781_LOCAL_SCRIPTS/workbench-connection.sh" "${WB_ARGS[@]}" || true
+else
+  zsh -c "$(curl -fsSL "$RAW/workbench-connection.sh")" workbench-connection.sh "${WB_ARGS[@]}" || true
+fi
+
 # ---- Summary ------------------------------------------------------------------
 echo
 echo "Checking what was installed..."
@@ -375,12 +388,8 @@ if [ "$ROWS" = 300024 ]; then echo "  Employees data    OK  (300024 employees)";
 echo
 if [ "$OK" = 1 ]; then
   echo "Done. Next:"
-  echo "  1. Open MySQL Workbench (Applications). Add a connection: host 127.0.0.1, port 3306,"
-  if [ -n "$OTHER_MYSQL" ]; then
-    echo "     user root, and your existing MySQL root password."
-  else
-    echo "     user root, and the password you just chose."
-  fi
+  echo "  1. Open MySQL Workbench (Applications) and click the 'MIS781' connection."
+  echo "     If it asks for a password, use your MySQL root password."
   echo "  2. Refresh the SCHEMAS list: you should see 'employees'. Try:"
   echo "       USE employees; SHOW TABLES; SELECT COUNT(*) FROM employees;"
   if [ -z "$OTHER_MYSQL" ]; then

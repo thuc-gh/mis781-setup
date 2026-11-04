@@ -48,6 +48,7 @@ function Invoke-Mis781Uninstall([bool]$DryRun, [bool]$Yes, [bool]$All) {
     $wbProducts = @(Get-ItemProperty $uninstallKeys -ErrorAction SilentlyContinue |
                     Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -like 'MySQL Workbench*' -and $_.PSChildName -like '{*' })
     foreach ($p in (Join-Path $env:APPDATA 'MySQL\Workbench'),
+                   (Join-Path $env:APPDATA 'MySQL Workbench'),
                    (Join-Path $env:USERPROFILE 'MIS781'),
                    (Join-Path $env:USERPROFILE 'Downloads\mysql-26.10.0-winx64.msi'),
                    (Join-Path $env:USERPROFILE 'Downloads\mysql-workbench-26.10.0-winx64.msi'),

@@ -28,7 +28,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Syntax check
         run: |
-          zsh -n setup.sh install.sh import-employees.sh
+          zsh -n setup.sh install.sh import-employees.sh workbench-connection.sh
           bash -n uninstall-mysql.sh
       - name: Put release files where the installer looks first
         env:
@@ -63,6 +63,23 @@ jobs:
           test "$("$M" --defaults-extra-file=/tmp/t.cnf -N -e 'SELECT @@bind_address')" = 127.0.0.1
           ls -d "/Applications/MySQL Workbench.app"
           grep -q 'mysql/bin' "$HOME/.zshrc"
+      - name: Workbench has the MIS781 connection and the saved password
+        run: |
+          SH="/Applications/MySQL Workbench.app/Contents/Resources/app/shell/bin"
+          export MYSQLSH_USER_CONFIG_HOME="$HOME/Library/Application Support/MySQL Workbench/mysqlsh"
+          cat > /tmp/wbcheck.py <<'PY'
+          import json
+          profile = gui.users.get_default_profile(1)["id"]
+          found = [c for c in gui.db_connections.list_db_connections(profile) if c["caption"] == "MIS781"]
+          assert len(found) == 1, found
+          o = found[0]["options"]; o = json.loads(o) if isinstance(o, str) else o
+          assert (o["host"], int(o["port"]), o["user"]) == ("127.0.0.1", 3306, "root"), o
+          print("MIS781 connection:", o)
+          PY
+          "$SH/mysqlsh" --py -f /tmp/wbcheck.py
+          # Read the password back through the same keychain helper Workbench uses.
+          SAVED=$(printf '{"ServerURL":"root@127.0.0.1:3306","SecretType":"password"}' | "$SH/mysql-secret-store-keychain" get | python3 -c 'import json,sys; print(json.load(sys.stdin)["Secret"])')
+          test "$SAVED" = "$TEST_PASSWORD"
       - name: Scan of a complete machine recommends Load data
         env:
           MIS781_ACTION: scan
@@ -90,6 +107,11 @@ jobs:
           ! "$M" --defaults-extra-file=/tmp/t.cnf -N -e 'SELECT 1' 2>/dev/null
           test "$("$M" --defaults-extra-file=/tmp/t2.cnf -N -e 'SELECT COUNT(*) FROM employees.employees')" = 300024
           launchctl print "gui/$(id -u)/com.mis781.mysqld" | grep -q 'state = running'
+      - name: Reset updated the saved Workbench password
+        run: |
+          SH="/Applications/MySQL Workbench.app/Contents/Resources/app/shell/bin"
+          SAVED=$(printf '{"ServerURL":"root@127.0.0.1:3306","SecretType":"password"}' | "$SH/mysql-secret-store-keychain" get | python3 -c 'import json,sys; print(json.load(sys.stdin)["Secret"])')
+          test "$SAVED" = "$SECOND_PASSWORD"
       - name: Re-run changes nothing
         env:
           MIS781_ACTION: install
@@ -120,6 +142,9 @@ jobs:
           ! grep -q 'MIS781' "$HOME/.zshrc"
           ls -d "/Applications/MySQL Workbench.app"
           test -f "$HOME/MIS781/test_db-master/employees.sql"
+          export MYSQLSH_USER_CONFIG_HOME="$HOME/Library/Application Support/MySQL Workbench/mysqlsh"
+          "/Applications/MySQL Workbench.app/Contents/Resources/app/shell/bin/mysqlsh" --py -f /tmp/wbcheck.py
+          security find-generic-password -a root -s 127.0.0.1:3306 >/dev/null
       - name: Install again reuses Workbench and the files
         env:
           MIS781_ACTION: install
@@ -128,7 +153,11 @@ jobs:
         run: |
           zsh ./setup.sh | tee reinstall.log
           grep -q 'Workbench already installed' reinstall.log
+          grep -q 'already has a connection' reinstall.log
           "$HOME/mysql/bin/mysql" --defaults-extra-file=/tmp/t.cnf -N -e 'SELECT 1'
+          SH="/Applications/MySQL Workbench.app/Contents/Resources/app/shell/bin"
+          SAVED=$(printf '{"ServerURL":"root@127.0.0.1:3306","SecretType":"password"}' | "$SH/mysql-secret-store-keychain" get | python3 -c 'import json,sys; print(json.load(sys.stdin)["Secret"])')
+          test "$SAVED" = "$TEST_PASSWORD"
       - name: Remove everything
         env:
           MIS781_ACTION: remove-all
@@ -138,6 +167,8 @@ jobs:
           test ! -e "$HOME/mysql"
           test ! -e "/Applications/MySQL Workbench.app"
           test ! -e "$HOME/Library/Application Support/MySQL/Workbench"
+          test ! -e "$HOME/Library/Application Support/MySQL Workbench"
+          ! security find-generic-password -a root -s 127.0.0.1:3306
           test ! -e "$HOME/MIS781"
           test ! -e "$HOME/Downloads/test_db-master.zip"
           ! pgrep -x mysqld
@@ -153,7 +184,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          foreach ($f in 'setup.ps1', 'install.ps1', 'import-employees.ps1', 'uninstall-mysql.ps1') {
+          foreach ($f in 'setup.ps1', 'install.ps1', 'import-employees.ps1', 'uninstall-mysql.ps1', 'workbench-connection.ps1') {
             $tokens = $null; $errors = $null
             [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f), [ref]$tokens, [ref]$errors)
             if ($errors.Count) { $errors | ForEach-Object { Write-Host "$f : $_" }; throw "$f has syntax errors" }
@@ -216,6 +247,29 @@ jobs:
           if ((& $q 'SELECT COUNT(*) FROM employees.salaries') -ne '2844047') { throw 'salaries count' }
           if ((& $q "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='employees'") -ne '8') { throw 'object count' }
           Get-Service 'MySQL*' | Format-Table Name, Status, StartType
+      - name: Workbench has the MIS781 connection
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sh = $null
+          foreach ($d in (Get-Item "$env:ProgramFiles\MySQL\MySQL Workbench*", "$env:ProgramFiles\MySQL Workbench*", "$env:LOCALAPPDATA\Programs\MySQL*" -ErrorAction SilentlyContinue)) {
+            $sh = Get-ChildItem $d.FullName -Recurse -Depth 6 -Filter mysqlsh.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($sh) { break }
+          }
+          if (-not $sh) { throw 'the mysqlsh.exe that Workbench ships with was not found' }
+          Write-Host "Workbench shell: $($sh.FullName)"
+          $env:MYSQLSH_USER_CONFIG_HOME = Join-Path $env:APPDATA 'MySQL Workbench\mysqlsh'
+          @'
+          import json
+          profile = gui.users.get_default_profile(1)["id"]
+          found = [c for c in gui.db_connections.list_db_connections(profile) if c["caption"] == "MIS781"]
+          assert len(found) == 1, found
+          o = found[0]["options"]; o = json.loads(o) if isinstance(o, str) else o
+          assert (o["host"], int(o["port"]), o["user"]) == ("127.0.0.1", 3306, "root"), o
+          print("MIS781 connection:", o)
+          '@ | Set-Content "$env:TEMP\wbcheck.py" -Encoding Ascii
+          & $sh.FullName --py -f "$env:TEMP\wbcheck.py"
+          if ($LASTEXITCODE -ne 0) { throw 'MIS781 connection check failed' }
       - name: Scan of a complete machine recommends Load data
         shell: powershell
         env:
@@ -300,6 +354,7 @@ jobs:
           $out = Get-Content .\setup.ps1 -Raw | Invoke-Expression *>&1 | Out-String
           Write-Host $out
           if ($out -notmatch 'Workbench already installed') { throw 'Workbench should have been reused' }
+          if ($out -notmatch 'already has a connection') { throw 'the MIS781 connection should have been kept' }
           & 'C:\Program Files\MySQL\MySQL Server 26.10\bin\mysql.exe' "--defaults-extra-file=$env:TEMP\t.cnf" -N -e 'SELECT 1'
           if ($LASTEXITCODE -ne 0) { throw 'fresh server should accept the password' }
       - name: Remove everything
@@ -313,6 +368,7 @@ jobs:
           if (Get-Service 'MySQL*' -ErrorAction SilentlyContinue) { throw 'service still there' }
           if (Test-Path "$env:USERPROFILE\MIS781") { throw 'MIS781 folder still there' }
           if (Test-Path "$env:APPDATA\MySQL\Workbench") { throw 'Workbench profile still there' }
+          if (Test-Path "$env:APPDATA\MySQL Workbench") { throw 'Workbench 26 profile still there' }
           if (Test-Path "$env:USERPROFILE\Downloads\test_db-master.zip") { throw 'download still there' }
           $wb = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -like 'MySQL Workbench*' }
           if ($wb) { throw 'Workbench still registered' }
