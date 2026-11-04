@@ -70,6 +70,16 @@ jobs:
   windows:
     runs-on: windows-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # Diagnostic: MySQL Configurator's CLI may choke on a double quote in the password.
+        include:
+          - name: quote-in-password
+            password: "Te'st\\Pw 9\"#!x"
+          - name: no-quote
+            password: "Te'st\\Pw 9#!x"
+    name: windows (${{ matrix.name }})
     steps:
       - uses: actions/checkout@v4
       - name: Parse the PowerShell scripts (syntax check)
@@ -99,14 +109,26 @@ jobs:
       - name: Install (unattended) and import, the way a student runs it (as text through iex)
         shell: powershell
         env:
-          MIS781_ROOT_PASSWORD: ${{ env.TEST_PASSWORD }}
+          MIS781_ROOT_PASSWORD: ${{ matrix.password }}
           MIS781_IMPORT: y
           MIS781_LOCAL_SCRIPTS: ${{ github.workspace }}
         run: |
           $ErrorActionPreference = 'Stop'
           Get-Content .\install.ps1 -Raw | Invoke-Expression
+      - name: Where did everything go (diagnostics)
+        if: always()
+        shell: powershell
+        run: |
+          Get-Service 'MySQL*' -ErrorAction SilentlyContinue | Format-Table Name, Status, StartType
+          Get-ChildItem 'C:\Program Files\MySQL', 'C:\Program Files\MySQL Workbench*', "$env:LOCALAPPDATA\Programs" -ErrorAction SilentlyContinue | Select-Object FullName
+          Get-ChildItem 'C:\Program Files\MySQL', 'C:\Program Files\MySQL Workbench*', "$env:LOCALAPPDATA\Programs" -Recurse -Depth 2 -Filter *.exe -ErrorAction SilentlyContinue | Where-Object Name -match 'workbench|configurator' | Select-Object FullName
+          Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*','HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -like 'MySQL*' } | Select-Object DisplayName, DisplayVersion, InstallLocation | Format-Table -AutoSize
+          Get-ChildItem 'C:\ProgramData\MySQL' -Recurse -Depth 1 -ErrorAction SilentlyContinue | Select-Object FullName
+          Get-ChildItem "$env:TEMP" -Filter '*onfigurator*' -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "--- $($_.FullName)"; Get-Content $_.FullName -Tail 40 }
       - name: Check server, password, data and network binding
         shell: powershell
+        env:
+          TEST_PASSWORD: ${{ matrix.password }}
         run: |
           $ErrorActionPreference = 'Stop'
           $M = 'C:\Program Files\MySQL\MySQL Server 26.10\bin\mysql.exe'
@@ -118,12 +140,10 @@ jobs:
           if ((& $q 'SELECT COUNT(*) FROM employees.salaries') -ne '2844047') { throw 'salaries count' }
           if ((& $q "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='employees'") -ne '8') { throw 'object count' }
           Get-Service 'MySQL*' | Format-Table Name, Status, StartType
-          Get-ChildItem 'C:\Program Files\MySQL' | Select-Object Name
-          Get-ChildItem 'C:\Program Files\MySQL\MySQL Workbench*' -Filter *.exe -Depth 1 | Select-Object FullName
       - name: Re-run changes nothing
         shell: powershell
         env:
-          MIS781_ROOT_PASSWORD: ${{ env.TEST_PASSWORD }}
+          MIS781_ROOT_PASSWORD: ${{ matrix.password }}
           MIS781_IMPORT: y
           MIS781_LOCAL_SCRIPTS: ${{ github.workspace }}
         run: |

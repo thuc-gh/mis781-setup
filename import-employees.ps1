@@ -24,7 +24,7 @@ if (-not $mysql) {
     return
 }
 Write-Host "[1/4] Using $mysql"
-Write-Host "      $((& $mysql --version) -replace '.*Ver ', 'Ver ')"
+Write-Host "      $(((& $mysql --version) | Out-String).Trim() -creplace '^.*? Ver ', 'Ver ')"
 
 # ---- 2. Find the database files ---------------------------------------------
 if (-not (Test-Path (Join-Path $Data 'employees.sql'))) {

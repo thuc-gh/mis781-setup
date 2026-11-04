@@ -60,7 +60,20 @@ function Get-Asset {
 }
 
 function Test-MySqlServer { Test-Path 'C:\Program Files\MySQL\MySQL Server *\bin\mysqld.exe' }
-function Test-Workbench   { (Test-Path 'C:\Program Files\MySQL\MySQL Workbench*\MySQL Workbench.exe') -or (Test-Path 'C:\Program Files\MySQL\MySQL Workbench*\MySQLWorkbench.exe') }
+function Get-WorkbenchInstall {
+    # Registered program first (any install location), then the usual folders.
+    $reg = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+                            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+                            'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
+           Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -like 'MySQL Workbench*' } | Select-Object -First 1
+    if ($reg) { return "$($reg.DisplayName) $($reg.DisplayVersion) ($($reg.InstallLocation))" }
+    foreach ($root in "$env:ProgramFiles\MySQL", "$env:ProgramFiles\MySQL Workbench*", "$env:LOCALAPPDATA\Programs") {
+        $exe = Get-ChildItem $root -Recurse -Depth 2 -Filter '*.exe' -ErrorAction SilentlyContinue | Where-Object Name -match 'workbench' | Select-Object -First 1
+        if ($exe) { return $exe.FullName }
+    }
+    return $null
+}
+function Test-Workbench { [bool](Get-WorkbenchInstall) }
 function Test-VcRedist {
     $k = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64' -ErrorAction SilentlyContinue
     return ($k -and $k.Installed -eq 1 -and $k.Major -ge 14 -and $k.Minor -ge 20)   # 14.20+ = VC++ 2019 or newer
@@ -118,6 +131,11 @@ if ($serverPath) {
                  '--install-sample-databases=None' -NoNewWindow -Wait -PassThru
         } finally { Remove-Item Env:\MYSQL_PWD -ErrorAction SilentlyContinue }
         if ($p.ExitCode -ne 0) { throw "MySQL Configurator failed with exit code $($p.ExitCode)" }
+        # Configurator can print an error and still exit 0, so check for the service it should have made.
+        $svc = Get-Service -Name 'MySQL*' -ErrorAction SilentlyContinue | Where-Object Name -notmatch 'Router' | Select-Object -First 1
+        if (-not $svc) { throw 'MySQL Configurator did not create the MySQL service (see its output above).' }
+        if ($svc.Status -ne 'Running') { Start-Service $svc.Name }
+        Write-Host "      Service $($svc.Name) is $((Get-Service $svc.Name).Status)."
     } else {
         Write-Host '      Opening the MySQL Server installer. Click through it with the defaults.'
         Write-Host '      At the end, leave "Run MySQL Configurator" ticked and click Finish.'
@@ -157,10 +175,26 @@ if ($Unattended -and $env:MIS781_IMPORT) {
 Write-Host ''
 Write-Host 'Checking what was installed...'
 if (Test-MySqlServer) { Write-Host '  MySQL Server      OK' } else { Write-Host '  MySQL Server      not found yet (did the installer finish?)' }
-if (Test-Workbench)   { Write-Host '  MySQL Workbench   OK' } else { Write-Host '  MySQL Workbench   not found yet (did the installer finish?)' }
+if (Test-Workbench)   { Write-Host "  MySQL Workbench   OK ($(Get-WorkbenchInstall))" } else { Write-Host '  MySQL Workbench   not found yet (did the installer finish?)' }
 if (Test-Path (Join-Path $Data 'test_db-master\employees.sql')) { Write-Host "  Employees files   OK ($Data\test_db-master)" } else { Write-Host '  Employees files   PROBLEM' }
 $svc = Get-Service -Name 'MySQL*' -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($svc) { Write-Host "  MySQL service     $($svc.Name) is $($svc.Status)" } else { Write-Host '  MySQL service     not configured yet (finish MySQL Configurator)' }
+
+if ($Unattended) {
+    $problems = @()
+    if (-not (Test-MySqlServer)) { $problems += 'MySQL Server missing' }
+    if (-not (Test-Workbench))   { $problems += 'MySQL Workbench missing' }
+    if (-not $svc -or $svc.Status -ne 'Running') { $problems += 'MySQL service not running' }
+    if ($env:MIS781_IMPORT) {
+        $m = Get-ChildItem 'C:\Program Files\MySQL\MySQL Server *\bin\mysql.exe' -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+        $env:MYSQL_PWD = $env:MIS781_ROOT_PASSWORD
+        try { $n = (& $m -h 127.0.0.1 -u root -N -e 'SELECT COUNT(*) FROM employees.employees' 2>$null | Out-String).Trim() } finally { Remove-Item Env:\MYSQL_PWD -ErrorAction SilentlyContinue }
+        if ($n -ne '300024') { $problems += "employees table has '$n' rows, expected 300024" }
+    }
+    if ($problems) { throw "Unattended install incomplete: $($problems -join '; ')" }
+    Write-Host 'Unattended install complete.'
+    return
+}
 
 Write-Host ''
 Write-Host 'You still need to do these yourself:'
