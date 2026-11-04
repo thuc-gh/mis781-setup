@@ -67,14 +67,12 @@ $OursRunning = ($svc -and $svc.Status -eq 'Running')
 $OursNoService = ($Ours -and -not $svc)
 
 $Other = ''; $OtherRunning = $false
-$listen = Get-NetTCPConnection -LocalPort 3306 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+# Only one process can hold port 3306: when our service is running it is that
+# process, so a listener counts as another server only when ours is not running.
+$listen = if (-not $OursRunning) { Get-NetTCPConnection -LocalPort 3306 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1 }
 if ($listen) {
-    # Our service's process id, so a listener on 3306 that is not it counts as another server.
-    $svcPid = if ($svc) { (Get-CimInstance Win32_Service -Filter "Name='$($svc.Name)'" -ErrorAction SilentlyContinue).ProcessId } else { 0 }
-    if ($listen.OwningProcess -ne $svcPid) {
-        $proc = Get-Process -Id $listen.OwningProcess -ErrorAction SilentlyContinue
-        $Other = "$(if ($proc) { $proc.ProcessName } else { 'a program' }) running on port 3306"; $OtherRunning = $true
-    }
+    $proc = Get-Process -Id $listen.OwningProcess -ErrorAction SilentlyContinue
+    $Other = "$(if ($proc) { $proc.ProcessName } else { 'a program' }) running on port 3306"; $OtherRunning = $true
 }
 if (-not $Other) {
     if (Test-Path 'C:\xampp\mysql\bin\mysqld.exe') { $Other = 'XAMPP (C:\xampp)' }
