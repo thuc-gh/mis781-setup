@@ -1,8 +1,9 @@
 # Installs everything on a clean macOS runner from the files on the Release page,
 # loads the Employees data, re-runs the installer and removes it all again.
 # Run by hand from the Actions tab before each trimester; it also catches
-# release assets that have gone wrong. The Windows job only parses the scripts
-# (the Windows installers are interactive) and dry-runs the uninstaller.
+# release assets that have gone wrong. The Windows job uses the installer's
+# unattended mode (MIS781_ROOT_PASSWORD set), so the click-through path itself
+# is not exercised there.
 name: Test installers
 
 on:
@@ -68,7 +69,7 @@ jobs:
 
   windows:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Parse the PowerShell scripts (syntax check)
@@ -81,6 +82,58 @@ jobs:
             if ($errors.Count) { $errors | ForEach-Object { Write-Host "$f : $_" }; throw "$f has syntax errors" }
             Write-Host "$f parses OK"
           }
-      - name: Uninstaller dry run
+      - name: Remove anything MySQL the runner image ships with
         shell: powershell
-        run: .\uninstall-mysql.ps1 -DryRun
+        run: |
+          Get-Service 'MySQL*' -ErrorAction SilentlyContinue | ForEach-Object { Stop-Service $_.Name -Force; sc.exe delete $_.Name }
+          if (Test-Path 'C:\Program Files\MySQL') { Remove-Item 'C:\Program Files\MySQL' -Recurse -Force }
+          if (Test-Path 'C:\ProgramData\MySQL') { Remove-Item 'C:\ProgramData\MySQL' -Recurse -Force }
+          if (Get-NetTCPConnection -LocalPort 3306 -State Listen -ErrorAction SilentlyContinue) { throw 'port 3306 still busy' }
+      - name: Put release files where the installer looks first
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\Downloads" | Out-Null
+          gh release download $env:RELEASE_TAG --dir "$env:USERPROFILE\Downloads" --pattern '*.msi' --pattern 'test_db-master.zip'
+      - name: Install (unattended) and import, the way a student runs it (as text through iex)
+        shell: powershell
+        env:
+          MIS781_ROOT_PASSWORD: ${{ env.TEST_PASSWORD }}
+          MIS781_IMPORT: y
+          MIS781_LOCAL_SCRIPTS: ${{ github.workspace }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-Content .\install.ps1 -Raw | Invoke-Expression
+      - name: Check server, password, data and network binding
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $M = 'C:\Program Files\MySQL\MySQL Server 26.10\bin\mysql.exe'
+          & $M --version
+          $esc = ($env:TEST_PASSWORD -replace '\\','\\') -replace '"','\"'
+          [IO.File]::WriteAllText("$env:TEMP\t.cnf", "[client]`nuser=root`nhost=127.0.0.1`npassword=`"$esc`"`n", [Text.UTF8Encoding]::new($false))
+          $q = { param($s) (& $M "--defaults-extra-file=$env:TEMP\t.cnf" -N -e $s | Out-String).Trim() }
+          if ((& $q 'SELECT COUNT(*) FROM employees.employees') -ne '300024') { throw 'employees count' }
+          if ((& $q 'SELECT COUNT(*) FROM employees.salaries') -ne '2844047') { throw 'salaries count' }
+          if ((& $q "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='employees'") -ne '8') { throw 'object count' }
+          Get-Service 'MySQL*' | Format-Table Name, Status, StartType
+          Get-ChildItem 'C:\Program Files\MySQL' | Select-Object Name
+          Get-ChildItem 'C:\Program Files\MySQL\MySQL Workbench*' -Filter *.exe -Depth 1 | Select-Object FullName
+      - name: Re-run changes nothing
+        shell: powershell
+        env:
+          MIS781_ROOT_PASSWORD: ${{ env.TEST_PASSWORD }}
+          MIS781_IMPORT: y
+          MIS781_LOCAL_SCRIPTS: ${{ github.workspace }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-Content .\install.ps1 -Raw | Invoke-Expression
+      - name: Uninstall
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\uninstall-mysql.ps1 -DryRun
+          .\uninstall-mysql.ps1 -Yes
+          if (Test-Path 'C:\ProgramData\MySQL\MySQL Server 26.10') { throw 'data folder still there' }
+          if (Get-Service 'MySQL*' -ErrorAction SilentlyContinue) { throw 'service still there' }

@@ -96,23 +96,61 @@ if ((Test-MySqlServer) -or (Test-VcRedist)) {
 }
 
 # ---- 4. MySQL Server and Workbench installers -------------------------------
+# Normal use: the installers open and the student clicks through them.
+# Unattended use (lab PCs, the Actions test): set MIS781_ROOT_PASSWORD and the
+# MSIs run silently and MySQL Configurator is driven from its command line.
+$Unattended = [bool]$env:MIS781_ROOT_PASSWORD
 Write-Host '[4/4] Installers'
 if ($serverPath) {
-    Write-Host '      Opening the MySQL Server installer. Click through it with the defaults.'
-    Write-Host '      At the end, leave "Run MySQL Configurator" ticked and click Finish.'
-    Write-Host '      In MySQL Configurator: keep "Development Computer", port 3306, and set a root password.'
-    Write-Host '      >>> WRITE DOWN THE ROOT PASSWORD YOU SET. There is no recovery. <<<'
-    Write-Host '      Keep "Configure MySQL Server as a Windows Service" ticked, then Execute.'
-    Start-Process msiexec.exe -ArgumentList '/i', "`"$serverPath`"" -Wait
-    Write-Host '      Server installer closed (MySQL Configurator may still be open: finish it).'
+    if ($Unattended) {
+        Write-Host '      Installing MySQL Server silently...'
+        $p = Start-Process msiexec.exe -ArgumentList '/i', "`"$serverPath`"", '/qn', '/norestart' -Wait -PassThru
+        if ($p.ExitCode -notin 0, 3010) { throw "MySQL Server MSI failed with exit code $($p.ExitCode)" }
+        $cfg = Get-ChildItem 'C:\Program Files\MySQL' -Recurse -Filter 'mysql_configurator.exe' -ErrorAction SilentlyContinue |
+               Select-Object -First 1 -ExpandProperty FullName
+        if (-not $cfg) { throw 'mysql_configurator.exe not found after installing MySQL Server' }
+        Write-Host "      Configuring the server with $cfg ..."
+        # Root password via the MYSQL_PWD environment variable, never on the command line.
+        $env:MYSQL_PWD = $env:MIS781_ROOT_PASSWORD
+        try {
+            $p = Start-Process -FilePath $cfg -ArgumentList '--console', '--action=configure', '--server-type=Developer', `
+                 '--port=3306', '--configure-as-windows-service=true', '--windows-service-auto-start=true', `
+                 '--install-sample-databases=None' -NoNewWindow -Wait -PassThru
+        } finally { Remove-Item Env:\MYSQL_PWD -ErrorAction SilentlyContinue }
+        if ($p.ExitCode -ne 0) { throw "MySQL Configurator failed with exit code $($p.ExitCode)" }
+    } else {
+        Write-Host '      Opening the MySQL Server installer. Click through it with the defaults.'
+        Write-Host '      At the end, leave "Run MySQL Configurator" ticked and click Finish.'
+        Write-Host '      In MySQL Configurator: keep "Development Computer", port 3306, and set a root password.'
+        Write-Host '      >>> WRITE DOWN THE ROOT PASSWORD YOU SET. There is no recovery. <<<'
+        Write-Host '      Keep "Configure MySQL Server as a Windows Service" ticked, then Execute.'
+        Start-Process msiexec.exe -ArgumentList '/i', "`"$serverPath`"" -Wait
+        Write-Host '      Server installer closed (MySQL Configurator may still be open: finish it).'
+    }
 } else {
     Write-Host '      MySQL Server already installed.'
 }
 if ($wbPath) {
-    Write-Host '      Opening the MySQL Workbench installer. Click Next, choose Complete, Install, Finish.'
-    Start-Process msiexec.exe -ArgumentList '/i', "`"$wbPath`"" -Wait
+    if ($Unattended) {
+        Write-Host '      Installing MySQL Workbench silently...'
+        $p = Start-Process msiexec.exe -ArgumentList '/i', "`"$wbPath`"", '/qn', '/norestart' -Wait -PassThru
+        if ($p.ExitCode -notin 0, 3010) { throw "MySQL Workbench MSI failed with exit code $($p.ExitCode)" }
+    } else {
+        Write-Host '      Opening the MySQL Workbench installer. Click Next, choose Complete, Install, Finish.'
+        Start-Process msiexec.exe -ArgumentList '/i', "`"$wbPath`"" -Wait
+    }
 } else {
     Write-Host '      MySQL Workbench already installed.'
+}
+
+# Unattended runs also load the data, like the macOS installer does.
+if ($Unattended -and $env:MIS781_IMPORT) {
+    $importScript = if ($env:MIS781_LOCAL_SCRIPTS -and (Test-Path (Join-Path $env:MIS781_LOCAL_SCRIPTS 'import-employees.ps1'))) {
+        Get-Content (Join-Path $env:MIS781_LOCAL_SCRIPTS 'import-employees.ps1') -Raw
+    } else {
+        (Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/thuc-gh/mis781-setup/main/import-employees.ps1' -UseBasicParsing).Content
+    }
+    & ([scriptblock]::Create($importScript))
 }
 
 # ---- Summary ----------------------------------------------------------------

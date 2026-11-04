@@ -54,15 +54,19 @@ if ($svc -and $svc.Status -ne 'Running') {
 # command line, and the file is deleted when the script ends.
 $cnf = Join-Path $env:TEMP ("mis781-" + [guid]::NewGuid().ToString('N') + ".cnf")
 Write-Host '[3/4] Connecting to the local MySQL Server as root.'
-$secure = Read-Host -Prompt '      MySQL root password (the one you set in MySQL Configurator; typing is hidden)' -AsSecureString
-$bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-try { $pw = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+if ($env:MIS781_ROOT_PASSWORD) {
+    $pw = $env:MIS781_ROOT_PASSWORD     # unattended use (lab PCs, the Actions test)
+} else {
+    $secure = Read-Host -Prompt '      MySQL root password (the one you set in MySQL Configurator; typing is hidden)' -AsSecureString
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try { $pw = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+}
 # Write ASCII with no BOM: mysql cannot read a UTF-16 or BOM-prefixed option file.
 # Quoted so a '#' in the password is not read as a comment; inside quotes mysql treats
 # backslash as an escape, so escape \ and " first.
 $pwEsc = ($pw -replace '\\','\\') -replace '"','\"'
 [IO.File]::WriteAllText($cnf, "[client]`nuser=root`nhost=127.0.0.1`nport=3306`npassword=`"$pwEsc`"`n", [Text.UTF8Encoding]::new($false))
-Remove-Variable pw, pwEsc, secure
+Remove-Variable pw, pwEsc -ErrorAction SilentlyContinue; Remove-Variable secure -ErrorAction SilentlyContinue
 
 function Invoke-Sql([string]$Sql) {
     $out = & $mysql "--defaults-extra-file=$cnf" -N -s -e $Sql 2>&1
@@ -101,10 +105,10 @@ try {
         $rows = Invoke-Sql 'SELECT COUNT(*) FROM employees.employees'
         Write-Host "[4/4] The 'employees' database already exists ($rows employee rows)."
         if ($rows -eq '300024') {
-            $ans = Read-Host '      Reload it from scratch anyway? This erases any changes you made. [y/N]'
+            $ans = if ($env:MIS781_IMPORT) { 'n' } else { Read-Host '      Reload it from scratch anyway? This erases any changes you made. [y/N]' }
             if ($ans -notmatch '^[Yy]') { Write-Host '      Keeping the existing database. Nothing changed.'; return }
         } else {
-            $ans = Read-Host '      It looks incomplete. Reload it from scratch? [Y/n]'
+            $ans = if ($env:MIS781_IMPORT) { 'y' } else { Read-Host '      It looks incomplete. Reload it from scratch? [Y/n]' }
             if ($ans -match '^[Nn]') { Write-Host '      Keeping the existing database. Nothing changed.'; return }
         }
     }

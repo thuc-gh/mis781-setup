@@ -51,6 +51,8 @@ irm https://raw.githubusercontent.com/thuc-gh/mis781-setup/main/import-employees
 
 Open **MySQL Workbench**, double-click the local connection, enter your root password and refresh the SCHEMAS list. You should see `employees`.
 
+**Lab PCs or unattended installs (Windows):** set `MIS781_ROOT_PASSWORD` (and `MIS781_IMPORT=y` to load the data) before running the script, and it installs silently with no clicking. On macOS the same two variables skip the prompts.
+
 ## Check it worked
 
 In a Workbench query tab:
@@ -141,7 +143,7 @@ It removes MySQL Server, its service and its data folder, and leaves Workbench a
 | `install.ps1` | Windows: downloads, unpacks the data, opens the two installers |
 | `import-employees.ps1` | Windows: load (or reload) the Employees database |
 | `uninstall-mysql.ps1` | Windows: complete MySQL Server removal |
-| `.github/workflows/test.yml` | Installs and removes everything on a clean macOS runner; run by hand before each trimester |
+| `.github/workflows/test.yml` | Installs, loads and removes everything on clean macOS and Windows runners; run by hand before each trimester |
 | `LICENSES.md` | Licences and source availability for everything distributed here |
 
 ---
