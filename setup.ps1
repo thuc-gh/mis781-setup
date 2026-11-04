@@ -87,8 +87,12 @@ function Get-WorkbenchInstall {
                             'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
            Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -like 'MySQL Workbench*' } | Select-Object -First 1
     if ($reg) { return ("$($reg.DisplayVersion) $($reg.InstallLocation)").Trim() }
-    foreach ($root in "$env:ProgramFiles\MySQL", "$env:ProgramFiles\MySQL Workbench*", "$env:LOCALAPPDATA\Programs") {
-        $exe = Get-ChildItem $root -Recurse -Depth 2 -Filter '*.exe' -ErrorAction SilentlyContinue | Where-Object Name -match 'workbench' | Select-Object -First 1
+    # Known locations only: a recursive search of LOCALAPPDATA\Programs took minutes.
+    foreach ($pattern in "$env:ProgramFiles\MySQL\MySQL Workbench*\MySQLWorkbench.exe",
+                         "$env:ProgramFiles\MySQL Workbench*\MySQLWorkbench.exe",
+                         "$env:LOCALAPPDATA\Programs\MySQL*\MySQLWorkbench.exe",
+                         "$env:LOCALAPPDATA\Programs\MySQL*\*\MySQLWorkbench.exe") {
+        $exe = Get-Item $pattern -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($exe) { return $exe.FullName }
     }
     return $null

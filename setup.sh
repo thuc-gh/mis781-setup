@@ -247,14 +247,15 @@ reset_password() {
 
   printf '[1/4] Stopping the server'
   launchctl bootout "gui/$UID_/$LABEL" >/dev/null 2>&1 || true
-  for i in $(seq 1 30); do
-    "$MYSQL_HOME/bin/mysqladmin" --no-defaults --socket="$SOCK" ping >/dev/null 2>&1 || break
+  # Wait for the process itself to exit, not just for the socket to close: InnoDB
+  # keeps ibdata1 locked until the very end of the shutdown.
+  for i in $(seq 1 60); do
+    pgrep -f "^$MYSQL_HOME/bin/mysqld" >/dev/null 2>&1 || break
+    [ "$i" = 20 ] && pgrep -f "^$MYSQL_HOME/bin/mysqld" | xargs kill 2>/dev/null   # not under launchd, or slow: ask it directly
     printf '.'; sleep 1
   done
-  if "$MYSQL_HOME/bin/mysqladmin" --no-defaults --socket="$SOCK" ping >/dev/null 2>&1; then
-    # Not under launchd: stop our own mysqld process directly.
-    pgrep -f "^$MYSQL_HOME/bin/mysqld" | xargs kill 2>/dev/null || true
-    for i in $(seq 1 30); do pgrep -f "^$MYSQL_HOME/bin/mysqld" >/dev/null || break; printf '.'; sleep 1; done
+  if pgrep -f "^$MYSQL_HOME/bin/mysqld" >/dev/null 2>&1; then
+    echo; echo "ERROR: the running server would not stop. Restart your Mac and try again."; exit 1
   fi
   echo
 

@@ -179,7 +179,7 @@ jobs:
           MIS781_ACTION: scan
         run: |
           $ErrorActionPreference = 'Stop'
-          $out = Get-Content .\setup.ps1 -Raw | Invoke-Expression | Out-String
+          $out = Get-Content .\setup.ps1 -Raw | Invoke-Expression *>&1 | Out-String
           Write-Host $out
           if ($out -notmatch 'MySQL Server      none') { throw 'scan: server should be none' }
           if ($out -notmatch 'Recommended: Install') { throw 'scan: should recommend Install' }
@@ -222,7 +222,7 @@ jobs:
           MIS781_ACTION: scan
         run: |
           $ErrorActionPreference = 'Stop'
-          $out = Get-Content .\setup.ps1 -Raw | Invoke-Expression | Out-String
+          $out = Get-Content .\setup.ps1 -Raw | Invoke-Expression *>&1 | Out-String
           Write-Host $out
           if ($out -notmatch 'MySQL Server      ours, running') { throw 'scan: server should be ours, running' }
           if ($out -notmatch 'Recommended: Load') { throw 'scan: should recommend Load' }
@@ -233,7 +233,7 @@ jobs:
           MIS781_NEW_PASSWORD: ${{ env.SECOND_PASSWORD }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $out = Get-Content .\setup.ps1 -Raw | Invoke-Expression | Out-String
+          $out = Get-Content .\setup.ps1 -Raw | Invoke-Expression *>&1 | Out-String
           Write-Host $out
           if ($out -notmatch 'Nothing was changed') { throw 'reset should have stopped before acting' }
           & 'C:\Program Files\MySQL\MySQL Server 26.10\bin\mysql.exe' "--defaults-extra-file=$env:TEMP\t.cnf" -N -e 'SELECT 1'
@@ -273,7 +273,7 @@ jobs:
           MIS781_ACTION: remove-server
         run: |
           $ErrorActionPreference = 'Stop'
-          $out = Get-Content .\setup.ps1 -Raw | Invoke-Expression | Out-String
+          $out = Get-Content .\setup.ps1 -Raw | Invoke-Expression *>&1 | Out-String
           Write-Host $out
           if ($out -notmatch 'Nothing was changed') { throw 'removal should have stopped before acting' }
           if (-not (Get-Service 'MySQL*' -ErrorAction SilentlyContinue)) { throw 'service should still exist' }
@@ -297,7 +297,7 @@ jobs:
           MIS781_ROOT_PASSWORD: ${{ env.TEST_PASSWORD }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $out = Get-Content .\setup.ps1 -Raw | Invoke-Expression | Out-String
+          $out = Get-Content .\setup.ps1 -Raw | Invoke-Expression *>&1 | Out-String
           Write-Host $out
           if ($out -notmatch 'Workbench already installed') { throw 'Workbench should have been reused' }
           & 'C:\Program Files\MySQL\MySQL Server 26.10\bin\mysql.exe' "--defaults-extra-file=$env:TEMP\t.cnf" -N -e 'SELECT 1'
