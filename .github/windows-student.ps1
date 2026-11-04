@@ -3,12 +3,17 @@
 # rights would, and checks the result. Started by run-as-student.ps1 from the
 # workflow; never run by students.
 #
-# The process inherits the runner's environment, so the profile folders are
-# put right first (they would otherwise point at the administrator's profile).
+# The process gets the student's own environment, so the runner's values
+# (workspace, test passwords) arrive in the JSON file named by -Config; the
+# profile folders are set from the profile itself in case any were inherited.
 
-param([Parameter(Mandatory)][string]$Step)
+param([Parameter(Mandatory)][string]$Step, [Parameter(Mandatory)][string]$Config)
 
 $ErrorActionPreference = 'Stop'
+$cfg = Get-Content $Config -Raw | ConvertFrom-Json
+$env:GITHUB_WORKSPACE = $cfg.Workspace
+$env:TEST_PASSWORD    = $cfg.TestPassword
+$env:SECOND_PASSWORD  = $cfg.SecondPassword
 $env:USERPROFILE  = [Environment]::GetFolderPath('UserProfile')
 $env:APPDATA      = [Environment]::GetFolderPath('ApplicationData')
 $env:LOCALAPPDATA = [Environment]::GetFolderPath('LocalApplicationData')
@@ -22,7 +27,7 @@ foreach ($v in 'MIS781_ACTION', 'MIS781_ROOT_PASSWORD', 'MIS781_IMPORT', 'MIS781
     Remove-Item "Env:\$v" -ErrorAction SilentlyContinue
 }
 $isAdmin = (New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-Write-Host "== student step: $Step  (user $env:USERNAME, admin: $isAdmin, profile $env:USERPROFILE)"
+Write-Host "== student step: $Step  (user $env:USERNAME, admin: $isAdmin, profile $env:USERPROFILE, workspace $env:GITHUB_WORKSPACE)"
 if ($isAdmin) { throw 'this step must run as a standard user, not an administrator' }
 
 $MysqlHome = Join-Path $env:USERPROFILE 'mysql'
