@@ -3,13 +3,20 @@
 #   irm https://raw.githubusercontent.com/thuc-gh/mis781-setup/main/workbench-connection.ps1 | iex
 #
 # Gives MySQL Workbench a ready-made connection called "MIS781" (host 127.0.0.1,
-# port 3306, user root). install.ps1 runs this at the end of Install. No
-# password is saved, since Workbench asks for it the first time and can save it. If
-# Workbench already has a connection to that server it is kept as it is; a
-# student's other connections are never touched. Workbench 26 keeps its
-# connections through the MySQL Shell it ships with, so that shell does the
-# work here; nothing is written by hand. It never fails the calling script;
-# when it cannot help it says what to do by hand.
+# port 3306, user root) and saves the root password in Windows Credential
+# Manager, so Workbench connects without asking. install.ps1 runs this at the
+# end of Install and setup.ps1 at the end of Reset password. If Workbench
+# already has a connection to that server it is kept as it is; a student's
+# other connections are never touched.
+#
+# The password comes from the option file named by MIS781_CNF (written by the
+# calling script) or from MIS781_ROOT_PASSWORD. With -NoPassword, or with
+# neither set, only the connection is added. Workbench 26 keeps its connections
+# through the MySQL Shell it ships with, so that shell does the work here;
+# nothing is written by hand. It never fails the calling script; when it
+# cannot help it says what to do by hand.
+
+param([switch]$NoPassword)
 
 $ErrorActionPreference = 'Stop'
 Write-Host 'Workbench connection'
@@ -149,7 +156,7 @@ except Exception as exc:  # never fail the install over a convenience
 '@
 [IO.File]::WriteAllText($scriptFile, $python, [Text.UTF8Encoding]::new($false))
 $env:MYSQLSH_USER_CONFIG_HOME = $shellHome
-$env:MIS781_WB_STORE = '0'
+$env:MIS781_WB_STORE = if ($NoPassword) { '0' } else { '1' }
 $env:MIS781_WB_RUNNING = if ($running) { '1' } else { '0' }
 try {
     # A warning on stderr must not count as a failure (Windows PowerShell throws on it under Stop).
