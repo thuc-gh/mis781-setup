@@ -10,6 +10,11 @@ name: Test installers
 
 on:
   workflow_dispatch:
+    inputs:
+      only:
+        description: 'Run only one platform (macos or windows); blank runs both'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -21,6 +26,7 @@ env:
 
 jobs:
   macos:
+    if: ${{ inputs.only != 'windows' }}
     runs-on: macos-15   # Apple Silicon runner
     timeout-minutes: 45
     env:
@@ -178,6 +184,7 @@ jobs:
           ! pgrep -x mysqld
 
   windows:
+    if: ${{ inputs.only != 'macos' }}
     runs-on: windows-latest
     timeout-minutes: 60
     env:
@@ -194,11 +201,13 @@ jobs:
             if ($errors.Count) { $errors | ForEach-Object { Write-Host "$f : $_" }; throw "$f has syntax errors" }
             Write-Host "$f parses OK"
           }
-          # The new Install path must never ask for elevation or touch a service.
+          # Our server's Install path (sections 1 to 3) must never touch a Windows
+          # service, and elevates once at most (the Visual C++ runtime installer).
           $install = Get-Content install.ps1 -Raw
-          $serverPart = $install.Substring(0, $install.IndexOf('# ---- 4. MySQL Workbench'))
+          $from = $install.IndexOf('# ---- 1. MySQL Server'); $to = $install.IndexOf('# ---- 4. MySQL Workbench')
+          $serverPart = $install.Substring($from, $to - $from)
           if ($serverPart -match 'Start-Service|New-Service|sc\.exe') { throw 'install.ps1 server path must not use Windows services' }
-          if (([regex]::Matches($serverPart, '-Verb RunAs')).Count -gt 2) { throw 'install.ps1 server path elevates more than the VC++ runtime and the legacy service start' }
+          if (([regex]::Matches($serverPart, '-Verb RunAs')).Count -gt 1) { throw 'install.ps1 server path elevates more than once' }
       - name: Remove anything MySQL the runner image ships with
         shell: powershell
         run: |
@@ -233,9 +242,10 @@ jobs:
         run: .\.github\run-as-student.ps1 -Step install
       - name: Where did everything go (diagnostics)
         if: failure()
+        continue-on-error: true
         shell: powershell
         run: |
-          .\.github\run-as-student.ps1 -Step diagnostics
+          if (Get-LocalUser mis781student -ErrorAction SilentlyContinue) { .\.github\run-as-student.ps1 -Step diagnostics }
           Get-Process mysqld -ErrorAction SilentlyContinue | Format-Table Id, Path
           Get-NetTCPConnection -LocalPort 3306 -ErrorAction SilentlyContinue | Format-Table
           Get-ChildItem $env:RUNNER_TEMP -Filter 'student-*' | ForEach-Object { Write-Host "--- $($_.Name)"; Get-Content $_.FullName -Tail 60 }
