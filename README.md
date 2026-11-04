@@ -67,7 +67,7 @@ Leave the PowerShell window open. When you click **Finish** in MySQL Configurato
 
 ## Check it worked
 
-Open **MySQL Workbench** and click the **MIS781** connection (on Windows, type your root password the first time and let Workbench save it; on macOS it opens straight away). If there is no MIS781 tile, add a connection with host `127.0.0.1`, port `3306`, user `root` and your password. Refresh the SCHEMAS list and run:
+Open **MySQL Workbench** and click the **MIS781** connection (on Windows, type your root password the first time and let Workbench save it; on macOS it opens straight away). If there is no MIS781 connection, add one with host `127.0.0.1`, port `3306`, user `root` and your password. Refresh the SCHEMAS list and run:
 
 ```sql
 USE employees;

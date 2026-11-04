@@ -226,6 +226,7 @@ reset_password() {
   echo "  - stop MySQL Server in ~/mysql (anything connected to it is disconnected)"
   echo "  - give the 'root' account the new password; the old one stops working"
   echo "  - start the server again"
+  echo "  - give Workbench the new password for its connection to this server (saved in your keychain)"
   echo "  Every database on the server is kept."
   if [ "$CONFIRMED" = 0 ]; then
     if [ -n "${MIS781_ACTION:-}" ] || [ "$HAVE_TTY" = 0 ]; then
@@ -297,8 +298,8 @@ reset_password() {
     if [ "$ROWS" = 300024 ]; then echo "  Employees data    OK  (300024 employees, untouched)"; else echo "  Employees data    not loaded (run this again and choose 'Load the Employees database')"; fi
     [ ! -f "$PLIST" ] && echo "  NOTE: no autostart entry was found; choose 'Install' once to put it back."
     echo
-    # Workbench keeps the root password in the keychain: give it the new one.
-    MIS781_CNF="$CNF" worker zsh workbench-connection.sh || true
+    # Workbench keeps the root password in the keychain, so give it the new one.
+    ( MIS781_CNF="$CNF" worker zsh workbench-connection.sh ) || true
     echo
     echo "Done. Open MySQL Workbench and click the 'MIS781' connection; if it asks for a password, use the new one."
   else

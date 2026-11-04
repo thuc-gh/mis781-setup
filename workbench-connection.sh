@@ -14,8 +14,8 @@
 # calling script) or from MIS781_ROOT_PASSWORD. With --no-password, or with
 # neither set, only the connection is added. Workbench 26 keeps its connections
 # through the MySQL Shell it ships with, so that shell does the work here;
-# nothing is written by hand. Never fails the calling script: when it cannot
-# help it says what to do by hand and exits 0.
+# nothing is written by hand. It never fails the calling script; when it
+# cannot help it says what to do by hand and exits 0.
 
 set -e
 APPS="${MIS781_APPS:-/Applications}"
@@ -35,7 +35,7 @@ for d in "$APPS" "$HOME/Applications"; do
 done
 if [ -z "$WB" ]; then
   echo "  MySQL Workbench 26 was not found, so no connection was added. In Workbench, add one"
-  echo "  by hand: host 127.0.0.1, port 3306, user root."
+  echo "  by hand with host 127.0.0.1, port 3306, user root."
   exit 0
 fi
 
@@ -55,7 +55,7 @@ from gui_plugin.core.Db import BackendDatabase
 from gui_plugin.users import backend as users
 
 HOST, PORT, USER = "127.0.0.1", 3306, "root"
-BY_HAND = "Add one by hand in Workbench: host 127.0.0.1, port 3306, user root."
+BY_HAND = "You can add one by hand in Workbench: host 127.0.0.1, port 3306, user root."
 store = os.environ.get("MIS781_WB_STORE") == "1"
 running = os.environ.get("MIS781_WB_RUNNING") == "1"
 
@@ -118,9 +118,8 @@ try:
         print(f"  Workbench already has a connection to this server ('{caption}'); it was kept as it is.")
     elif running:
         print("  MySQL Workbench is open, so no connection was added. Quit Workbench and run the")
-        print("  setup line again (Install) to get the ready-made 'MIS781' connection, or add one")
-        print("  by hand: host 127.0.0.1, port 3306, user root.")
-        options = None
+        print(f"  setup line again (Install) to get the ready-made 'MIS781' connection. {BY_HAND}")
+        raise SystemExit(0)
     else:
         gui.db_connections.add_db_connection(profile_id, {
             "db_type": "MySQL",
@@ -131,9 +130,7 @@ try:
         options = {"host": HOST, "port": PORT, "user": USER}
         print("  Added a connection called 'MIS781' (host 127.0.0.1, port 3306, user root) to MySQL Workbench.")
 
-    if options is None:
-        pass
-    elif not store:
+    if not store:
         print("  Workbench asks for the root password the first time you connect and can save it.")
     else:
         password = None

@@ -30,6 +30,9 @@ jobs:
         run: |
           zsh -n setup.sh install.sh import-employees.sh workbench-connection.sh
           bash -n uninstall-mysql.sh
+          # The Python inside the two Workbench connection workers must stay identical.
+          diff <(sed -n "/^cat > \"\$SCRIPT\" <<'PY'$/,/^PY$/p" workbench-connection.sh | sed '1d;$d') \
+               <(sed -n "/^\$python = @'$/,/^'@$/p" workbench-connection.ps1 | sed '1d;$d')
       - name: Put release files where the installer looks first
         env:
           GH_TOKEN: ${{ github.token }}
@@ -168,7 +171,7 @@ jobs:
           test ! -e "/Applications/MySQL Workbench.app"
           test ! -e "$HOME/Library/Application Support/MySQL/Workbench"
           test ! -e "$HOME/Library/Application Support/MySQL Workbench"
-          ! security find-generic-password -a root -s 127.0.0.1:3306
+          if security find-generic-password -a root -s 127.0.0.1:3306 >/dev/null 2>&1; then echo "the saved Workbench password is still in the keychain"; exit 1; fi
           test ! -e "$HOME/MIS781"
           test ! -e "$HOME/Downloads/test_db-master.zip"
           ! pgrep -x mysqld
@@ -368,7 +371,7 @@ jobs:
           if (Get-Service 'MySQL*' -ErrorAction SilentlyContinue) { throw 'service still there' }
           if (Test-Path "$env:USERPROFILE\MIS781") { throw 'MIS781 folder still there' }
           if (Test-Path "$env:APPDATA\MySQL\Workbench") { throw 'Workbench profile still there' }
-          if (Test-Path "$env:APPDATA\MySQL Workbench") { throw 'Workbench 26 profile still there' }
+          if (Test-Path "$env:APPDATA\MySQL Workbench") { throw 'Workbench 26 settings folder still there' }
           if (Test-Path "$env:USERPROFILE\Downloads\test_db-master.zip") { throw 'download still there' }
           $wb = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -like 'MySQL Workbench*' }
           if ($wb) { throw 'Workbench still registered' }

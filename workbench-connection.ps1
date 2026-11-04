@@ -4,12 +4,12 @@
 #
 # Gives MySQL Workbench a ready-made connection called "MIS781" (host 127.0.0.1,
 # port 3306, user root). install.ps1 runs this at the end of Install. No
-# password is saved: Workbench asks for it the first time and can save it. If
+# password is saved, since Workbench asks for it the first time and can save it. If
 # Workbench already has a connection to that server it is kept as it is; a
 # student's other connections are never touched. Workbench 26 keeps its
 # connections through the MySQL Shell it ships with, so that shell does the
-# work here; nothing is written by hand. Never fails the calling script: when it
-# cannot help it says what to do by hand.
+# work here; nothing is written by hand. It never fails the calling script;
+# when it cannot help it says what to do by hand.
 
 $ErrorActionPreference = 'Stop'
 Write-Host 'Workbench connection'
@@ -34,24 +34,24 @@ function Find-WorkbenchShell {
 $mysqlsh = Find-WorkbenchShell
 if (-not $mysqlsh) {
     Write-Host '  MySQL Workbench 26 was not found, so no connection was added. In Workbench, add one'
-    Write-Host '  by hand: host 127.0.0.1, port 3306, user root.'
+    Write-Host '  by hand with host 127.0.0.1, port 3306, user root.'
     return
 }
 # Workbench holds its connection database while it runs, so the connection is
 # only added when it is closed.
 $running = [bool](Get-Process | Where-Object { $_.ProcessName -like '*Workbench*' })
 
-$home_ = Join-Path $env:APPDATA 'MySQL Workbench\mysqlsh'
-New-Item -ItemType Directory -Force -Path $home_ | Out-Null
-$script = Join-Path $env:TEMP ("mis781-wb-" + [guid]::NewGuid().ToString('N') + ".py")
+$shellHome = Join-Path $env:APPDATA 'MySQL Workbench\mysqlsh'
+New-Item -ItemType Directory -Force -Path $shellHome | Out-Null
+$scriptFile = Join-Path $env:TEMP ("mis781-wb-" + [guid]::NewGuid().ToString('N') + ".py")
 # Keep this script the same as the one in workbench-connection.sh.
-$py = @'
+$python = @'
 import json, os
 from gui_plugin.core.Db import BackendDatabase
 from gui_plugin.users import backend as users
 
 HOST, PORT, USER = "127.0.0.1", 3306, "root"
-BY_HAND = "Add one by hand in Workbench: host 127.0.0.1, port 3306, user root."
+BY_HAND = "You can add one by hand in Workbench: host 127.0.0.1, port 3306, user root."
 store = os.environ.get("MIS781_WB_STORE") == "1"
 running = os.environ.get("MIS781_WB_RUNNING") == "1"
 
@@ -114,9 +114,8 @@ try:
         print(f"  Workbench already has a connection to this server ('{caption}'); it was kept as it is.")
     elif running:
         print("  MySQL Workbench is open, so no connection was added. Quit Workbench and run the")
-        print("  setup line again (Install) to get the ready-made 'MIS781' connection, or add one")
-        print("  by hand: host 127.0.0.1, port 3306, user root.")
-        options = None
+        print(f"  setup line again (Install) to get the ready-made 'MIS781' connection. {BY_HAND}")
+        raise SystemExit(0)
     else:
         gui.db_connections.add_db_connection(profile_id, {
             "db_type": "MySQL",
@@ -127,9 +126,7 @@ try:
         options = {"host": HOST, "port": PORT, "user": USER}
         print("  Added a connection called 'MIS781' (host 127.0.0.1, port 3306, user root) to MySQL Workbench.")
 
-    if options is None:
-        pass
-    elif not store:
+    if not store:
         print("  Workbench asks for the root password the first time you connect and can save it.")
     else:
         password = None
@@ -150,16 +147,19 @@ try:
 except Exception as exc:  # never fail the install over a convenience
     print(f"  Could not set up the Workbench connection ({exc}). {BY_HAND}")
 '@
-[IO.File]::WriteAllText($script, $py, [Text.UTF8Encoding]::new($false))
-$env:MYSQLSH_USER_CONFIG_HOME = $home_
+[IO.File]::WriteAllText($scriptFile, $python, [Text.UTF8Encoding]::new($false))
+$env:MYSQLSH_USER_CONFIG_HOME = $shellHome
 $env:MIS781_WB_STORE = '0'
 $env:MIS781_WB_RUNNING = if ($running) { '1' } else { '0' }
 try {
-    & $mysqlsh --py -f $script 2>&1 | ForEach-Object { Write-Host "$_" }
+    # A warning on stderr must not count as a failure (Windows PowerShell throws on it under Stop).
+    $ErrorActionPreference = 'Continue'
+    & $mysqlsh --py -f $scriptFile 2>&1 | ForEach-Object { Write-Host "$_" }
+    $ErrorActionPreference = 'Stop'
     if ($LASTEXITCODE -ne 0) { Write-Host '  Could not set up the Workbench connection. Add one by hand in Workbench: host 127.0.0.1, port 3306, user root.' }
 } catch {
     Write-Host "  Could not set up the Workbench connection ($($_.Exception.Message)). Add one by hand in Workbench: host 127.0.0.1, port 3306, user root."
 } finally {
-    Remove-Item $script -Force -ErrorAction SilentlyContinue
+    Remove-Item $scriptFile -Force -ErrorAction SilentlyContinue
     Remove-Item Env:\MYSQLSH_USER_CONFIG_HOME, Env:\MIS781_WB_STORE, Env:\MIS781_WB_RUNNING -ErrorAction SilentlyContinue
 }

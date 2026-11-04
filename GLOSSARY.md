@@ -61,7 +61,7 @@ The tile in MySQL Workbench that opens a session to one server. Install gives Wo
 _Avoid_: profile, bookmark, saved server, connection tile
 
 **Saved password**:
-The root password that Install and Reset password keep in the macOS keychain for the Workbench connection, so it opens without a prompt. Windows has none: Workbench asks once and can save it itself. Remove server leaves it; Remove everything deletes it.
+The root password that Install and Reset password keep in the macOS keychain for the Workbench connection, so it opens without a prompt. Windows has none, since Workbench there asks once and can save it itself. Remove server leaves it; Remove everything deletes it.
 _Avoid_: stored credential, keychain entry, remembered password
 
 **Destructive action**:

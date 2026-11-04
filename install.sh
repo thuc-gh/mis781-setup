@@ -366,7 +366,8 @@ export MIS781_CNF="$CNF"
 if [ -n "${MIS781_LOCAL_SCRIPTS:-}" ] && [ -f "$MIS781_LOCAL_SCRIPTS/workbench-connection.sh" ]; then
   zsh "$MIS781_LOCAL_SCRIPTS/workbench-connection.sh" "${WB_ARGS[@]}" || true
 else
-  zsh -c "$(curl -fsSL "$RAW/workbench-connection.sh")" workbench-connection.sh "${WB_ARGS[@]}" || true
+  WB_SCRIPT=$(curl -fsSL "$RAW/workbench-connection.sh") || WB_SCRIPT='echo "  Could not download the Workbench connection step. In Workbench, add a connection by hand: host 127.0.0.1, port 3306, user root."'
+  zsh -c "$WB_SCRIPT" workbench-connection.sh "${WB_ARGS[@]}" || true
 fi
 
 # ---- Summary ------------------------------------------------------------------

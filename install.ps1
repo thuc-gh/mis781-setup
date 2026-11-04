@@ -230,13 +230,14 @@ if ($Unattended) {
 # password the first time and can save it.
 if (Test-Workbench) {
     Write-Host ''
-    $wbScript = if ($env:MIS781_LOCAL_SCRIPTS -and (Test-Path (Join-Path $env:MIS781_LOCAL_SCRIPTS 'workbench-connection.ps1'))) {
-        Get-Content (Join-Path $env:MIS781_LOCAL_SCRIPTS 'workbench-connection.ps1') -Raw
-    } else {
-        (Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/thuc-gh/mis781-setup/main/workbench-connection.ps1' -UseBasicParsing).Content
-    }
-    try { & ([scriptblock]::Create($wbScript)) }
-    catch { Write-Host "  Could not set up the Workbench connection ($($_.Exception.Message)). Add one by hand in Workbench: host 127.0.0.1, port 3306, user root." }
+    try {
+        $wbScript = if ($env:MIS781_LOCAL_SCRIPTS -and (Test-Path (Join-Path $env:MIS781_LOCAL_SCRIPTS 'workbench-connection.ps1'))) {
+            Get-Content (Join-Path $env:MIS781_LOCAL_SCRIPTS 'workbench-connection.ps1') -Raw
+        } else {
+            (Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/thuc-gh/mis781-setup/main/workbench-connection.ps1' -UseBasicParsing).Content
+        }
+        & ([scriptblock]::Create($wbScript))
+    } catch { Write-Host "  Could not set up the Workbench connection ($($_.Exception.Message)). Add one by hand in Workbench: host 127.0.0.1, port 3306, user root." }
 }
 
 # ---- Summary ----------------------------------------------------------------
@@ -268,8 +269,8 @@ if ($Unattended) {
 
 Write-Host ''
 if ($Imported) {
-    Write-Host 'Next: open MySQL Workbench, connect to the local server as root (host 127.0.0.1, port 3306),'
-    Write-Host 'refresh the schemas list and you should see "employees".'
+    Write-Host 'Next: open MySQL Workbench, click the "MIS781" connection, type your root password and let it'
+    Write-Host 'save it. Refresh the schemas list and you should see "employees".'
     Write-Host 'If the load above reported a problem, run the setup line again and choose "Load the Employees database".'
 } else {
     Write-Host 'You still need to do these yourself:'
