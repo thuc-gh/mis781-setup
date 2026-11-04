@@ -17,8 +17,13 @@ $config = Join-Path $env:RUNNER_TEMP 'student-env.json'
     ConvertTo-Json | Set-Content $config -Encoding UTF8
 $p = Start-Process powershell.exe -Credential $cred -LoadUserProfile -WorkingDirectory $env:RUNNER_TEMP `
      -ArgumentList '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', "`"$script`"", '-Step', $Step, '-Config', "`"$config`"" `
-     -RedirectStandardOutput $log -RedirectStandardError $err -Wait -PassThru
+     -RedirectStandardOutput $log -RedirectStandardError $err -PassThru
+# A step that hangs (a prompt nobody can answer, say) is killed after 25 minutes
+# so its output still reaches the job log.
+$timedOut = -not $p.WaitForExit(25 * 60 * 1000)
+if ($timedOut) { & taskkill.exe /T /F /PID $p.Id 2>&1 | Out-Null; Start-Sleep 2 }
 Get-Content $log -ErrorAction SilentlyContinue
 $e = Get-Content $err -ErrorAction SilentlyContinue
 if ($e) { Write-Host '--- stderr ---'; $e }
+if ($timedOut) { throw "student step '$Step' did not finish within 25 minutes (killed)" }
 if ($p.ExitCode -ne 0) { throw "student step '$Step' failed with exit code $($p.ExitCode)" }

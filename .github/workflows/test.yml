@@ -241,7 +241,7 @@ jobs:
         shell: powershell
         run: .\.github\run-as-student.ps1 -Step install
       - name: Where did everything go (diagnostics)
-        if: failure()
+        if: always()
         continue-on-error: true
         shell: powershell
         run: |

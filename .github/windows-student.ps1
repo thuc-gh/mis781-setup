@@ -36,10 +36,13 @@ $TaskName = 'MIS781 MySQL'
 
 function Invoke-Setup([hashtable]$Vars) {
     foreach ($k in $Vars.Keys) { Set-Item "Env:\$k" $Vars[$k] }
+    # Streamed with timestamps as it happens, so a hang shows where it stopped.
+    $lines = New-Object Collections.Generic.List[string]
     try {
-        $out = Get-Content (Join-Path $env:GITHUB_WORKSPACE 'setup.ps1') -Raw | Invoke-Expression *>&1 | Out-String
-        Write-Host $out
-        return $out
+        Get-Content (Join-Path $env:GITHUB_WORKSPACE 'setup.ps1') -Raw | Invoke-Expression *>&1 | ForEach-Object {
+            $t = "$_"; $lines.Add($t); Write-Host "$(Get-Date -Format HH:mm:ss) $t"; [Console]::Out.Flush()
+        }
+        return ($lines -join "`n")
     } finally { foreach ($k in $Vars.Keys) { Remove-Item "Env:\$k" -ErrorAction SilentlyContinue } }
 }
 function Write-Cnf([string]$Password, [string]$Path) {
