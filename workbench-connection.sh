@@ -147,7 +147,7 @@ try:
         else:
             url = f"{USER}@{options.get('host')}:{int(options.get('port') or PORT)}"
             shell.store_credential(url, password)
-            print("  Saved the root password in your keychain, so Workbench connects without asking.")
+            print("  Saved the root password for Workbench, so it connects without asking.")
 except Exception as exc:  # never fail the install over a convenience
     print(f"  Could not set up the Workbench connection ({exc}). {BY_HAND}")
 PY

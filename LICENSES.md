@@ -6,7 +6,7 @@ Files are mirrored rather than linked because vendor download URLs move when a v
 
 ## MySQL Community Server 26.10.0 and MySQL Workbench 26.10.0 — unmodified
 
-- **Files:** `mysql-26.10.0-macos15-arm64.tar.gz`, `mysql-26.10.0-winx64.msi`, `mysql-workbench-26.10.0-macos-arm64.zip`, `mysql-workbench-26.10.0-winx64.msi`, exactly as downloaded from dev.mysql.com (SHA-256 sums are in the release notes).
+- **Files:** `mysql-26.10.0-macos15-arm64.tar.gz`, `mysql-26.10.0-winx64.zip`, `mysql-26.10.0-winx64.msi`, `mysql-workbench-26.10.0-macos-arm64.zip`, `mysql-workbench-26.10.0-winx64.msi`, exactly as downloaded from dev.mysql.com (SHA-256 sums are in the release notes).
 - **Licence:** GNU General Public License, version 2, as published by Oracle Corporation (Community edition). Licensing documents are included inside each distribution.
 - **Copyright:** Oracle Corporation and/or its affiliates.
 - **Trademarks:** MySQL is a trademark of Oracle Corporation. This mirror is not affiliated with, endorsed by, or sponsored by Oracle.

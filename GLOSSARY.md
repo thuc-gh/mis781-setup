@@ -21,11 +21,15 @@ One thing the setup script can do after the scan: install, load data, reset pass
 _Avoid_: option, mode, command, step
 
 **Our server**:
-A MySQL Server put on the computer by this unit's scripts: the home-folder install on macOS, or the MySQL Windows service installed from our MSI.
+A MySQL Server put in the student's home folder by this unit's scripts (`~/mysql` on macOS, `C:\Users\<you>\mysql` on Windows), run as the student with no administrator rights and listening only on this computer.
 _Avoid_: MIS781 server, local server, the unit's MySQL
 
+**Legacy server**:
+The MySQL Windows service installed under Program Files from this unit's MSI before week 2 of T3 2026. Load data, Reset password and the removal actions still work on it (Reset and removal elevated); Install keeps it and never migrates it.
+_Avoid_: old server, MSI server, service install
+
 **Other server**:
-Any MySQL Server not installed by this unit: Homebrew, the Oracle package installer on macOS, MAMP, XAMPP, WAMP, Docker. The macOS installer uses it when it is there; the Windows installer cannot and asks for it to be stopped first. Neither removes it unless the student picks a removal action that lists it.
+Any MySQL Server not installed by this unit: Homebrew, the Oracle package installer on macOS, MAMP, XAMPP, WAMP, Docker, Oracle's own Windows installer. Install uses it when it is there and skips the server download. Nothing removes it unless the student picks a removal action that lists it.
 _Avoid_: existing server, foreign server, third-party MySQL
 
 **Install**:
@@ -61,7 +65,7 @@ The tile in MySQL Workbench that opens a session to one server. Install gives Wo
 _Avoid_: profile, bookmark, saved server, connection tile
 
 **Saved password**:
-The root password that Install and Reset password keep in the macOS keychain for the Workbench connection, so it opens without a prompt. Windows has none, since Workbench there asks once and can save it itself. Remove server leaves it; Remove everything deletes it.
+The root password that Install and Reset password keep in the operating system's credential store (the macOS keychain, Windows Credential Manager) for the Workbench connection, so it opens without a prompt. Remove server leaves it; Remove everything deletes it.
 _Avoid_: stored credential, keychain entry, remembered password
 
 **Destructive action**:

@@ -16,4 +16,4 @@ Students forget the MySQL root password every trimester, and the first README to
 
 - The README line "there is no recovery" is wrong and must go.
 - Reset is never the scan's recommendation, since the scan cannot know a password was forgotten; it is a standing menu item whenever our server is present.
-- On Windows the reset needs one elevation prompt (stop and start the service); the setup script relaunches itself elevated rather than asking the student to open Terminal (Admin).
+- On Windows a reset of the legacy server (the MSI-installed service, see ADR 0002) needs one elevation prompt (stop and start the service); the setup script relaunches itself elevated rather than asking the student to open Terminal (Admin). Our server on Windows, which runs as the student, resets without elevation.

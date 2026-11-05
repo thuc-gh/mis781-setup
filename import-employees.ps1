@@ -9,18 +9,25 @@
 $ErrorActionPreference = 'Stop'
 $Data = Join-Path $env:USERPROFILE 'MIS781\test_db-master'
 $Base = 'https://github.com/thuc-gh/mis781-setup/releases/download/v2026-t3'
+$MysqlHome = Join-Path $env:USERPROFILE 'mysql'
 
 Write-Host 'MIS781 Employees database import'
 Write-Host '================================'
 
 # ---- 1. Find the mysql command-line client ----------------------------------
-$mysql = Get-ChildItem 'C:\Program Files\MySQL\MySQL Server *\bin\mysql.exe' -ErrorAction SilentlyContinue |
-         Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+# Ours (C:\Users\<you>\mysql) first, then the legacy MSI install, then the PATH.
+# install.ps1 hands over the one it used in MIS781_MYSQL.
+$mysql = $env:MIS781_MYSQL
+if (-not $mysql -and (Test-Path (Join-Path $MysqlHome 'bin\mysql.exe'))) { $mysql = Join-Path $MysqlHome 'bin\mysql.exe' }
+if (-not $mysql) {
+    $mysql = Get-ChildItem 'C:\Program Files\MySQL\MySQL Server *\bin\mysql.exe' -ErrorAction SilentlyContinue |
+             Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+}
 if (-not $mysql) { $mysql = (Get-Command mysql.exe -ErrorAction SilentlyContinue).Source }
 if (-not $mysql) {
     Write-Host 'ERROR: mysql.exe was not found. MySQL Server does not seem to be installed yet.'
-    Write-Host '       Run the installer first and click through the MySQL Server installer it opens:'
-    Write-Host '         irm https://raw.githubusercontent.com/thuc-gh/mis781-setup/main/install.ps1 | iex'
+    Write-Host '       Run the setup line and choose Install:'
+    Write-Host '         irm https://raw.githubusercontent.com/thuc-gh/mis781-setup/main/setup.ps1 | iex'
     return
 }
 Write-Host "[1/4] Using $mysql"
@@ -44,29 +51,52 @@ foreach ($f in 'employees.sql', 'load_employees.dump', 'load_salaries1.dump') {
 Write-Host "[2/4] Database files: $Data"
 
 # ---- 3. Connect ---------------------------------------------------------------
-$svc = Get-Service -Name 'MySQL*' -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($svc -and $svc.Status -ne 'Running') {
-    Write-Host "      The $($svc.Name) service is $($svc.Status). Trying to start it (Windows may ask you to allow this)..."
-    try { Start-Process powershell.exe -ArgumentList '-NoProfile', '-Command', "Start-Service '$($svc.Name)'" -Verb RunAs -Wait } catch {}
+# Our server not running? Start it (it runs as you, no admin). A legacy service
+# that is stopped needs Windows to allow a start.
+$ourMysqld = Join-Path $MysqlHome 'bin\mysqld.exe'
+$ourRunning = [bool](Get-Process -Name mysqld -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path -ieq $ourMysqld })
+$portBusy = [bool](Get-NetTCPConnection -LocalPort 3306 -State Listen -ErrorAction SilentlyContinue)
+if ($mysql -ieq (Join-Path $MysqlHome 'bin\mysql.exe') -and -not $ourRunning -and -not $portBusy -and (Test-Path $ourMysqld)) {
+    Write-Host -NoNewline '      MySQL Server is not running. Starting it'
+    Start-Process -FilePath $ourMysqld -ArgumentList "--defaults-file=`"$MysqlHome\my.ini`"" -WorkingDirectory $MysqlHome -WindowStyle Hidden
+    $admin = Join-Path $MysqlHome 'bin\mysqladmin.exe'
+    $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    for ($t = 0; $t -lt 60; $t++) {
+        & $admin --no-defaults -h 127.0.0.1 -P 3306 -u root ping 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) { break }
+        Write-Host -NoNewline '.'; Start-Sleep 1
+    }
+    $ErrorActionPreference = $prev
+    Write-Host ''
+} elseif ($mysql -notlike "$MysqlHome\*") {
+    $svc = Get-Service -Name 'MySQL*' -ErrorAction SilentlyContinue | Where-Object Name -notmatch 'Router' | Select-Object -First 1
+    if ($svc -and $svc.Status -ne 'Running') {
+        Write-Host "      The $($svc.Name) service is $($svc.Status). Trying to start it (Windows may ask you to allow this)..."
+        try { Start-Process powershell.exe -ArgumentList '-NoProfile', '-Command', "Start-Service '$($svc.Name)'" -Verb RunAs -Wait } catch {}
+    }
 }
 
 # The password goes in a private temp file that mysql reads, never on the
-# command line, and the file is deleted when the script ends.
-$cnf = Join-Path $env:TEMP ("mis781-" + [guid]::NewGuid().ToString('N') + ".cnf")
+# command line, and the file is deleted when the script ends. install.ps1
+# hands over the file it already checked in MIS781_CNF.
+$ownCnf = -not ($env:MIS781_CNF -and (Test-Path $env:MIS781_CNF))
+$cnf = if ($ownCnf) { Join-Path $env:TEMP ("mis781-" + [guid]::NewGuid().ToString('N') + ".cnf") } else { $env:MIS781_CNF }
 Write-Host '[3/4] Connecting to the local MySQL Server as root.'
-if ($env:MIS781_ROOT_PASSWORD) {
-    $pw = $env:MIS781_ROOT_PASSWORD     # unattended use (lab PCs, the Actions test)
-} else {
-    $secure = Read-Host -Prompt '      MySQL root password (the one you set in MySQL Configurator; typing is hidden)' -AsSecureString
-    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-    try { $pw = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+if ($ownCnf) {
+    if ($env:MIS781_ROOT_PASSWORD) {
+        $pw = $env:MIS781_ROOT_PASSWORD     # unattended use (lab PCs, the Actions test)
+    } else {
+        $secure = Read-Host -Prompt '      MySQL root password (typing is hidden)' -AsSecureString
+        $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+        try { $pw = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+    }
+    # Write ASCII with no BOM: mysql cannot read a UTF-16 or BOM-prefixed option file.
+    # Quoted so a '#' in the password is not read as a comment; inside quotes mysql treats
+    # backslash as an escape, so escape \ and " first.
+    $pwEsc = ($pw -replace '\\','\\') -replace '"','\"'
+    [IO.File]::WriteAllText($cnf, "[client]`nuser=root`nhost=127.0.0.1`nport=3306`npassword=`"$pwEsc`"`n", [Text.UTF8Encoding]::new($false))
+    Remove-Variable pw, pwEsc -ErrorAction SilentlyContinue; Remove-Variable secure -ErrorAction SilentlyContinue
 }
-# Write ASCII with no BOM: mysql cannot read a UTF-16 or BOM-prefixed option file.
-# Quoted so a '#' in the password is not read as a comment; inside quotes mysql treats
-# backslash as an escape, so escape \ and " first.
-$pwEsc = ($pw -replace '\\','\\') -replace '"','\"'
-[IO.File]::WriteAllText($cnf, "[client]`nuser=root`nhost=127.0.0.1`nport=3306`npassword=`"$pwEsc`"`n", [Text.UTF8Encoding]::new($false))
-Remove-Variable pw, pwEsc -ErrorAction SilentlyContinue; Remove-Variable secure -ErrorAction SilentlyContinue
 
 function Invoke-Sql([string]$Sql) {
     $out = & $mysql "--defaults-extra-file=$cnf" -N -s -e $Sql 2>&1
@@ -90,10 +120,8 @@ try {
             Write-Host "         & '$mysql' -u root -p --connect-expired-password"
             Write-Host "         ALTER USER 'root'@'localhost' IDENTIFIED BY 'YourNewPassword123!';"
         } else {
-            Write-Host '       MySQL Server is probably not running or not configured yet.'
-            Write-Host '       Open MySQL Configurator from the Start menu and finish it, or start the service:'
-            Write-Host '         Start menu > Services > MySQL... > Start'
-            Write-Host '       then run this again.'
+            Write-Host '       MySQL Server is probably not running. Run the setup line and choose Install,'
+            Write-Host '       which starts it (and puts it back if it is broken), then Load the data again.'
         }
         return
     }
@@ -150,5 +178,5 @@ try {
         }
     } finally { Pop-Location }
 } finally {
-    Remove-Item $cnf -Force -ErrorAction SilentlyContinue
+    if ($ownCnf) { Remove-Item $cnf -Force -ErrorAction SilentlyContinue }
 }

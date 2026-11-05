@@ -1,14 +1,20 @@
-# Installs everything on a clean macOS runner from the files on the Release page,
-# loads the Employees data, resets the root password, re-runs the installer and
-# removes it all again, driving it all through the setup script's unattended
-# mode. Run by hand from the Actions tab before each trimester; it also catches
-# release assets that have gone wrong. The Windows job uses the installer's
-# unattended mode (MIS781_ROOT_PASSWORD set), so the click-through path itself
-# is not exercised there.
+# Installs everything on clean macOS and Windows runners from the files on the
+# Release page, loads the Employees data, resets the root password, re-runs the
+# installer and removes it all again, driving it all through the setup script's
+# unattended mode. Run by hand from the Actions tab before each trimester; it
+# also catches release assets that have gone wrong. The Windows job runs the
+# student side as a standard local user with no administrator rights, so a
+# green run proves the home-folder layout needs none; only Workbench's MSI
+# (installed beforehand, removed at the end) runs as the administrator.
 name: Test installers
 
 on:
   workflow_dispatch:
+    inputs:
+      only:
+        description: 'Run only one platform (macos or windows); blank runs both'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -20,6 +26,7 @@ env:
 
 jobs:
   macos:
+    if: ${{ inputs.only != 'windows' }}
     runs-on: macos-15   # Apple Silicon runner
     timeout-minutes: 45
     env:
@@ -177,22 +184,30 @@ jobs:
           ! pgrep -x mysqld
 
   windows:
+    if: ${{ inputs.only != 'macos' }}
     runs-on: windows-latest
     timeout-minutes: 60
     env:
-      MIS781_LOCAL_SCRIPTS: ${{ github.workspace }}
+      STUDENT_PASSWORD: "Stu-dent!Pw-2026-x"
     steps:
       - uses: actions/checkout@v4
       - name: Parse the PowerShell scripts (syntax check)
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          foreach ($f in 'setup.ps1', 'install.ps1', 'import-employees.ps1', 'uninstall-mysql.ps1', 'workbench-connection.ps1') {
+          foreach ($f in 'setup.ps1', 'install.ps1', 'import-employees.ps1', 'uninstall-mysql.ps1', 'workbench-connection.ps1', '.github\windows-student.ps1', '.github\run-as-student.ps1') {
             $tokens = $null; $errors = $null
             [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f), [ref]$tokens, [ref]$errors)
             if ($errors.Count) { $errors | ForEach-Object { Write-Host "$f : $_" }; throw "$f has syntax errors" }
             Write-Host "$f parses OK"
           }
+          # Our server's Install path (sections 1 to 3) must never touch a Windows
+          # service, and elevates once at most (the Visual C++ runtime installer).
+          $install = Get-Content install.ps1 -Raw
+          $from = $install.IndexOf('# ---- 1. MySQL Server'); $to = $install.IndexOf('# ---- 4. MySQL Workbench')
+          $serverPart = $install.Substring($from, $to - $from)
+          if ($serverPart -match 'Start-Service|New-Service|sc\.exe') { throw 'install.ps1 server path must not use Windows services' }
+          if (([regex]::Matches($serverPart, '-Verb RunAs')).Count -gt 1) { throw 'install.ps1 server path elevates more than once' }
       - name: Remove anything MySQL the runner image ships with
         shell: powershell
         run: |
@@ -200,178 +215,83 @@ jobs:
           if (Test-Path 'C:\Program Files\MySQL') { Remove-Item 'C:\Program Files\MySQL' -Recurse -Force }
           if (Test-Path 'C:\ProgramData\MySQL') { Remove-Item 'C:\ProgramData\MySQL' -Recurse -Force }
           if (Get-NetTCPConnection -LocalPort 3306 -State Listen -ErrorAction SilentlyContinue) { throw 'port 3306 still busy' }
-      - name: Put release files where the installer looks first
+      - name: Install Workbench from the release (the one administrator step)
         shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\Downloads" | Out-Null
-          gh release download $env:RELEASE_TAG --dir "$env:USERPROFILE\Downloads" --pattern '*.msi' --pattern 'test_db-master.zip'
+          $ErrorActionPreference = 'Stop'
+          gh release download $env:RELEASE_TAG --dir $env:RUNNER_TEMP --pattern 'mysql-workbench-26.10.0-winx64.msi'
+          $p = Start-Process msiexec.exe -ArgumentList '/i', "`"$env:RUNNER_TEMP\mysql-workbench-26.10.0-winx64.msi`"", '/qn', '/norestart' -Wait -PassThru
+          if ($p.ExitCode -notin 0, 3010) { throw "Workbench MSI failed with exit code $($p.ExitCode)" }
+      - name: Create a standard local user (no administrator rights)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pw = ConvertTo-SecureString $env:STUDENT_PASSWORD -AsPlainText -Force
+          New-LocalUser -Name mis781student -Password $pw -PasswordNeverExpires -AccountNeverExpires -UserMayNotChangePassword | Out-Null
+          Add-LocalGroupMember -Group Users -Member mis781student
+          icacls $env:GITHUB_WORKSPACE /grant "mis781student:(OI)(CI)RX" /T /Q
+          icacls $env:RUNNER_TEMP /grant "mis781student:(OI)(CI)M" /T /Q
+          Start-Service seclogon -ErrorAction SilentlyContinue
       - name: Scan of a clean machine recommends Install
         shell: powershell
-        env:
-          MIS781_ACTION: scan
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $out = Get-Content .\setup.ps1 -Raw | Invoke-Expression *>&1 | Out-String
-          Write-Host $out
-          if ($out -notmatch 'MySQL Server      none') { throw 'scan: server should be none' }
-          if ($out -notmatch 'Recommended: Install') { throw 'scan: should recommend Install' }
-      - name: Install (unattended) and import, the way a student runs it (as text through iex)
+        run: .\.github\run-as-student.ps1 -Step scan-clean
+      - name: Install through the setup script, as the student
         shell: powershell
-        env:
-          MIS781_ACTION: install
-          MIS781_ROOT_PASSWORD: ${{ env.TEST_PASSWORD }}
-          MIS781_IMPORT: y
-        run: |
-          $ErrorActionPreference = 'Stop'
-          Get-Content .\setup.ps1 -Raw | Invoke-Expression
+        run: .\.github\run-as-student.ps1 -Step install
       - name: Where did everything go (diagnostics)
-        if: failure()
+        if: always()
+        continue-on-error: true
         shell: powershell
         run: |
-          Get-Service 'MySQL*' -ErrorAction SilentlyContinue | Format-Table Name, Status, StartType
-          Get-ChildItem 'C:\Program Files\MySQL', 'C:\Program Files\MySQL Workbench*', "$env:LOCALAPPDATA\Programs" -ErrorAction SilentlyContinue | Select-Object FullName
-          Get-ChildItem 'C:\Program Files\MySQL', 'C:\Program Files\MySQL Workbench*', "$env:LOCALAPPDATA\Programs" -Recurse -Depth 2 -Filter *.exe -ErrorAction SilentlyContinue | Where-Object Name -match 'workbench|configurator' | Select-Object FullName
-          Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*','HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -like 'MySQL*' } | Select-Object DisplayName, DisplayVersion, InstallLocation | Format-Table -AutoSize
-          Get-ChildItem 'C:\ProgramData\MySQL' -Recurse -Depth 1 -ErrorAction SilentlyContinue | Select-Object FullName
-          Get-ChildItem "$env:TEMP" -Filter '*onfigurator*' -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "--- $($_.FullName)"; Get-Content $_.FullName -Tail 40 }
-          Get-ChildItem "$env:TEMP" -Filter 'mis781-*.log' -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "--- $($_.FullName)"; Get-Content $_.FullName -Tail 40 }
-      - name: Check server, password, data and network binding
+          if (Get-LocalUser mis781student -ErrorAction SilentlyContinue) { .\.github\run-as-student.ps1 -Step diagnostics }
+          Get-Process mysqld -ErrorAction SilentlyContinue | Format-Table Id, Path
+          Get-NetTCPConnection -LocalPort 3306 -ErrorAction SilentlyContinue | Format-Table
+          Get-ChildItem $env:RUNNER_TEMP -Filter 'student-*' | ForEach-Object { Write-Host "--- $($_.Name)"; Get-Content $_.FullName -Tail 60 }
+      - name: Check server, password, data, binding, logon task and PATH
         shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $M = 'C:\Program Files\MySQL\MySQL Server 26.10\bin\mysql.exe'
-          & $M --version
-          $esc = ($env:TEST_PASSWORD -replace '\\','\\') -replace '"','\"'
-          [IO.File]::WriteAllText("$env:TEMP\t.cnf", "[client]`nuser=root`nhost=127.0.0.1`npassword=`"$esc`"`n", [Text.UTF8Encoding]::new($false))
-          $q = { param($s) (& $M "--defaults-extra-file=$env:TEMP\t.cnf" -N -e $s | Out-String).Trim() }
-          if ((& $q 'SELECT COUNT(*) FROM employees.employees') -ne '300024') { throw 'employees count' }
-          if ((& $q 'SELECT COUNT(*) FROM employees.salaries') -ne '2844047') { throw 'salaries count' }
-          if ((& $q "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='employees'") -ne '8') { throw 'object count' }
-          Get-Service 'MySQL*' | Format-Table Name, Status, StartType
-      - name: Workbench has the MIS781 connection
+        run: .\.github\run-as-student.ps1 -Step check-install
+      - name: Workbench has the MIS781 connection and the saved password
         shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $sh = $null
-          foreach ($d in (Get-Item "$env:ProgramFiles\MySQL\MySQL Workbench*", "$env:ProgramFiles\MySQL Workbench*", "$env:LOCALAPPDATA\Programs\MySQL*" -ErrorAction SilentlyContinue)) {
-            $sh = Get-ChildItem $d.FullName -Recurse -Depth 6 -Filter mysqlsh.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($sh) { break }
-          }
-          if (-not $sh) { throw 'the mysqlsh.exe that Workbench ships with was not found' }
-          Write-Host "Workbench shell: $($sh.FullName)"
-          $env:MYSQLSH_USER_CONFIG_HOME = Join-Path $env:APPDATA 'MySQL Workbench\mysqlsh'
-          @'
-          import json
-          profile = gui.users.get_default_profile(1)["id"]
-          found = [c for c in gui.db_connections.list_db_connections(profile) if c["caption"] == "MIS781"]
-          assert len(found) == 1, found
-          o = found[0]["options"]; o = json.loads(o) if isinstance(o, str) else o
-          assert (o["host"], int(o["port"]), o["user"]) == ("127.0.0.1", 3306, "root"), o
-          print("MIS781 connection:", o)
-          '@ | Set-Content "$env:TEMP\wbcheck.py" -Encoding Ascii
-          & $sh.FullName --py -f "$env:TEMP\wbcheck.py"
-          if ($LASTEXITCODE -ne 0) { throw 'MIS781 connection check failed' }
+        run: .\.github\run-as-student.ps1 -Step check-workbench
       - name: Scan of a complete machine recommends Load data
         shell: powershell
-        env:
-          MIS781_ACTION: scan
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $out = Get-Content .\setup.ps1 -Raw | Invoke-Expression *>&1 | Out-String
-          Write-Host $out
-          if ($out -notmatch 'MySQL Server      ours, running') { throw 'scan: server should be ours, running' }
-          if ($out -notmatch 'Recommended: Load') { throw 'scan: should recommend Load' }
+        run: .\.github\run-as-student.ps1 -Step scan-complete
       - name: Reset without confirmation changes nothing
         shell: powershell
-        env:
-          MIS781_ACTION: reset
-          MIS781_NEW_PASSWORD: ${{ env.SECOND_PASSWORD }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $out = Get-Content .\setup.ps1 -Raw | Invoke-Expression *>&1 | Out-String
-          Write-Host $out
-          if ($out -notmatch 'Nothing was changed') { throw 'reset should have stopped before acting' }
-          & 'C:\Program Files\MySQL\MySQL Server 26.10\bin\mysql.exe' "--defaults-extra-file=$env:TEMP\t.cnf" -N -e 'SELECT 1'
-          if ($LASTEXITCODE -ne 0) { throw 'old password should still work' }
-      - name: Reset the root password, data survives
+        run: .\.github\run-as-student.ps1 -Step reset-dry
+      - name: Reset the root password, data survives, saved password updated
         shell: powershell
-        env:
-          MIS781_ACTION: reset
-          MIS781_NEW_PASSWORD: ${{ env.SECOND_PASSWORD }}
-          MIS781_CONFIRM: yes
-        run: |
-          $ErrorActionPreference = 'Stop'
-          Get-Content .\setup.ps1 -Raw | Invoke-Expression
-          $M = 'C:\Program Files\MySQL\MySQL Server 26.10\bin\mysql.exe'
-          $esc = ($env:SECOND_PASSWORD -replace '\\','\\') -replace '"','\"'
-          [IO.File]::WriteAllText("$env:TEMP\t2.cnf", "[client]`nuser=root`nhost=127.0.0.1`npassword=`"$esc`"`n", [Text.UTF8Encoding]::new($false))
-          $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-          & $M "--defaults-extra-file=$env:TEMP\t.cnf" -N -e 'SELECT 1' 2>$null
-          $old = $LASTEXITCODE
-          $ErrorActionPreference = $prev
-          if ($old -eq 0) { throw 'old password should no longer work' }
-          $n = (& $M "--defaults-extra-file=$env:TEMP\t2.cnf" -N -e 'SELECT COUNT(*) FROM employees.employees' | Out-String).Trim()
-          if ($n -ne '300024') { throw "employees count after reset: $n" }
-          if ((Get-Service 'MySQL*' | Where-Object Name -notmatch 'Router').Status -ne 'Running') { throw 'service not running after reset' }
+        run: .\.github\run-as-student.ps1 -Step reset
       - name: Re-run changes nothing
         shell: powershell
-        env:
-          MIS781_ACTION: install
-          MIS781_ROOT_PASSWORD: ${{ env.SECOND_PASSWORD }}
-          MIS781_IMPORT: y
-        run: |
-          $ErrorActionPreference = 'Stop'
-          Get-Content .\setup.ps1 -Raw | Invoke-Expression
+        run: .\.github\run-as-student.ps1 -Step rerun
+      - name: Standalone import script reloads cleanly
+        shell: powershell
+        run: .\.github\run-as-student.ps1 -Step import-reload
       - name: Remove server without confirmation changes nothing
         shell: powershell
-        env:
-          MIS781_ACTION: remove-server
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $out = Get-Content .\setup.ps1 -Raw | Invoke-Expression *>&1 | Out-String
-          Write-Host $out
-          if ($out -notmatch 'Nothing was changed') { throw 'removal should have stopped before acting' }
-          if (-not (Get-Service 'MySQL*' -ErrorAction SilentlyContinue)) { throw 'service should still exist' }
-      - name: Remove server keeps Workbench and the Employees files
+        run: .\.github\run-as-student.ps1 -Step remove-server-dry
+      - name: Remove server keeps Workbench, the connection and the Employees files
         shell: powershell
-        env:
-          MIS781_ACTION: remove-server
-          MIS781_CONFIRM: yes
-        run: |
-          $ErrorActionPreference = 'Stop'
-          Get-Content .\setup.ps1 -Raw | Invoke-Expression
-          if (Test-Path 'C:\ProgramData\MySQL\MySQL Server 26.10') { throw 'data folder still there' }
-          if (Get-Service 'MySQL*' -ErrorAction SilentlyContinue) { throw 'service still there' }
-          if (-not (Test-Path "$env:USERPROFILE\MIS781\test_db-master\employees.sql")) { throw 'Employees files should be kept' }
-          $wb = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -like 'MySQL Workbench*' }
-          if (-not $wb) { throw 'Workbench should be kept' }
+        run: .\.github\run-as-student.ps1 -Step remove-server
       - name: Install again reuses Workbench and the files
         shell: powershell
-        env:
-          MIS781_ACTION: install
-          MIS781_ROOT_PASSWORD: ${{ env.TEST_PASSWORD }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $out = Get-Content .\setup.ps1 -Raw | Invoke-Expression *>&1 | Out-String
-          Write-Host $out
-          if ($out -notmatch 'Workbench already installed') { throw 'Workbench should have been reused' }
-          if ($out -notmatch 'already has a connection') { throw 'the MIS781 connection should have been kept' }
-          & 'C:\Program Files\MySQL\MySQL Server 26.10\bin\mysql.exe' "--defaults-extra-file=$env:TEMP\t.cnf" -N -e 'SELECT 1'
-          if ($LASTEXITCODE -ne 0) { throw 'fresh server should accept the password' }
-      - name: Remove everything
+        run: .\.github\run-as-student.ps1 -Step reinstall
+      - name: Remove server again, as the student
+        shell: powershell
+        run: .\.github\run-as-student.ps1 -Step remove-server-final
+      - name: Remove everything (Workbench needs the administrator)
         shell: powershell
         env:
           MIS781_ACTION: remove-all
           MIS781_CONFIRM: yes
+          MIS781_LOCAL_SCRIPTS: ${{ github.workspace }}
         run: |
           $ErrorActionPreference = 'Stop'
           Get-Content .\setup.ps1 -Raw | Invoke-Expression
-          if (Get-Service 'MySQL*' -ErrorAction SilentlyContinue) { throw 'service still there' }
-          if (Test-Path "$env:USERPROFILE\MIS781") { throw 'MIS781 folder still there' }
-          if (Test-Path "$env:APPDATA\MySQL\Workbench") { throw 'Workbench profile still there' }
-          if (Test-Path "$env:APPDATA\MySQL Workbench") { throw 'Workbench 26 settings folder still there' }
-          if (Test-Path "$env:USERPROFILE\Downloads\test_db-master.zip") { throw 'download still there' }
           $wb = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -like 'MySQL Workbench*' }
           if ($wb) { throw 'Workbench still registered' }
+          if (Get-Process mysqld -ErrorAction SilentlyContinue) { throw 'a mysqld is still running' }
+          if (Test-Path 'C:\Users\mis781student\mysql') { throw "the student's mysql folder is still there" }
