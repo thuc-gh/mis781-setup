@@ -29,10 +29,18 @@ echo "MIS781 macOS setup"
 echo "=================="
 
 # ---- Checks before we download anything -------------------------------------
-if [ "$(uname -m)" != arm64 ]; then
+if [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" != 1 ]; then
   echo "ERROR: this installer is for Apple Silicon Macs (M1/M2/M3/M4/M5) only."
   echo "       Your Mac reports: $(uname -m) (Intel)."
   echo "       See the 'Intel Macs' section of the README for what to do instead."
+  exit 1
+fi
+
+# MySQL 26.10 is built for macOS 14 or later (Workbench 26 needs 12 or later).
+OS_MAJOR=$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)
+if [ "${OS_MAJOR:-99}" -lt 14 ]; then
+  echo "ERROR: MySQL 26.10 needs macOS 14 (Sonoma) or later; this Mac runs $(sw_vers -productVersion)."
+  echo "       Update macOS (Apple menu > System Settings > General > Software Update), then run this again."
   exit 1
 fi
 
@@ -57,9 +65,15 @@ fi
 # installer, Homebrew, MAMP, Docker...). An existing one is used, not replaced.
 OURS=0; [ -x "$MYSQL_HOME/bin/mysqld" ] && OURS=1
 OTHER_MYSQL=""
+# lsof only shows our own processes, so also probe the port itself (a server run
+# by another account, such as the Oracle installer's _mysql user, shows up there).
 LISTENER_PID=$(lsof -nP -iTCP:3306 -sTCP:LISTEN 2>/dev/null | tail -n +2 | head -1 | awk '{print $2}' || true)
-if [ -n "$LISTENER_PID" ] && ! ps -o command= -p "$LISTENER_PID" 2>/dev/null | grep -q "^$MYSQL_HOME/bin/mysqld"; then
-  OTHER_MYSQL="a MySQL server already running on port 3306 ($(ps -o comm= -p "$LISTENER_PID" 2>/dev/null | xargs basename 2>/dev/null))"
+PORT_BUSY=0; nc -z -w 2 127.0.0.1 3306 >/dev/null 2>&1 && PORT_BUSY=1
+OURS_LISTENING=0
+[ -n "$LISTENER_PID" ] && ps -o command= -p "$LISTENER_PID" 2>/dev/null | grep -q "^$MYSQL_HOME/bin/mysqld" && OURS_LISTENING=1
+if [ "$PORT_BUSY" = 1 ] && [ "$OURS_LISTENING" = 0 ]; then
+  WHO=$( [ -n "$LISTENER_PID" ] && ps -o comm= -p "$LISTENER_PID" 2>/dev/null | xargs basename 2>/dev/null || echo "run by another account or app")
+  OTHER_MYSQL="a MySQL server already running on port 3306 ($WHO)"
 elif [ "$OURS" = 0 ] && [ -x /usr/local/mysql/bin/mysqld ]; then
   OTHER_MYSQL="MySQL from the Oracle installer at /usr/local/mysql"
 elif [ "$OURS" = 0 ] && command -v brew >/dev/null 2>&1 && brew list --formula 2>/dev/null | grep -qE '^mysql(@[0-9.]+)?$'; then
@@ -147,6 +161,12 @@ else
     # Program files missing but a database folder exists: keep it, add the programs.
     cp -R "$HOME/$SERVER_DIR/." "$MYSQL_HOME/"
     rm -rf "${HOME:?}/${SERVER_DIR:?}"
+  elif [ -e "$MYSQL_HOME" ] && [ -n "$(ls -A "$MYSQL_HOME" 2>/dev/null)" ] && ! grep -qs 'written by install.sh' "$MYSQL_HOME/my.cnf"; then
+    # A ~/mysql folder that is not ours (someone's own files): never delete it.
+    rm -rf "${HOME:?}/${SERVER_DIR:?}"
+    echo "ERROR: a folder called ~/mysql already exists and was not made by this installer."
+    echo "       Move or rename it (for example to ~/mysql-old), then run this again."
+    exit 1
   else
     rm -rf "${MYSQL_HOME:?}"
     mv "$HOME/$SERVER_DIR" "$MYSQL_HOME"
@@ -181,7 +201,7 @@ NEW_SERVER=0
 if [ -n "$OTHER_MYSQL" ]; then
   echo "[2/5] Skipped (using the existing server)."
 elif [ -d "$MYSQL_HOME/data/mysql" ]; then
-  echo "[2/5] Database folder already set up (~/mysql/data). Keeping your existing root password."
+  echo "[2/5] Database folder already set up (~/mysql/data)."
 else
   echo "[2/5] Creating the database folder..."
   rm -rf "${MYSQL_HOME:?}/data"
@@ -239,6 +259,13 @@ if [ "$READY" != 1 ]; then
   exit 1
 fi
 echo "      Server is running on 127.0.0.1 port 3306."
+# An earlier run that stopped before the password was set leaves root with no
+# password. Detect that and treat the server as new, so a password gets set now.
+if [ "$NEW_SERVER" = 0 ] && "$MYSQL_HOME/bin/mysql" --defaults-file="$MYSQL_HOME/my.cnf" --socket="$SOCK" -u root --skip-password -N -s -e 'SELECT 1' >/dev/null 2>&1; then
+  echo "      The root account has no password yet (an earlier run was interrupted)."
+  NEW_SERVER=1
+fi
+[ "$NEW_SERVER" = 0 ] && echo "      Keeping your existing root password."
 fi
 
 # Root password: prompt (hidden), or take it from MIS781_ROOT_PASSWORD when set.
@@ -252,20 +279,26 @@ if [ "$NEW_SERVER" = 1 ]; then
   echo "      >>> WRITE IT DOWN. If you forget it, the only fix is a reinstall. <<<"
   PW="${MIS781_ROOT_PASSWORD:-}"
   while [ -z "$PW" ]; do
-    printf '      New root password (typing is hidden): '; read -rs PW < /dev/tty; echo
-    printf '      Type it again: '; read -rs PW2 < /dev/tty; echo
+    printf '      New root password (typing is hidden): '; IFS= read -rs PW < /dev/tty; echo
+    printf '      Type it again: '; IFS= read -rs PW2 < /dev/tty; echo
     if [ -z "$PW" ]; then echo "      It cannot be empty."; elif [ "$PW" != "$PW2" ]; then echo "      They do not match, try again."; PW=""; fi
   done
   # SQL string literal: escape \ and ' so any password works (sed, because zsh's
   # ${var//} replacement mangles backslashes).
   PW_SQL=$(printf '%s' "$PW" | sed -e 's/\\/\\\\/g' -e "s/'/\\\\'/g")
-  printf "ALTER USER 'root'@'localhost' IDENTIFIED BY '%s';\nFLUSH PRIVILEGES;\n" "$PW_SQL" | \
-    "$MYSQL_HOME/bin/mysql" --defaults-file="$MYSQL_HOME/my.cnf" --socket="$SOCK" -u root --skip-password 2>&1 | grep -v 'Using a password' || true
+  ALTER_OUT=$(printf "ALTER USER 'root'@'localhost' IDENTIFIED BY '%s';\nFLUSH PRIVILEGES;\n" "$PW_SQL" | \
+    "$MYSQL_HOME/bin/mysql" --defaults-file="$MYSQL_HOME/my.cnf" --socket="$SOCK" -u root --skip-password 2>&1) && ALTER_RC=0 || ALTER_RC=$?
+  if [ "$ALTER_RC" != 0 ]; then
+    echo "ERROR: could not set the root password:"
+    echo "       $ALTER_OUT"
+    echo "       Show this to your tutor."
+    exit 1
+  fi
   echo "      Root password set."
 else
   PW="${MIS781_ROOT_PASSWORD:-}"
   if [ -z "$PW" ] && [ -n "$MYSQL_CLIENT" ]; then
-    printf '      Your existing MySQL root password, for the checks below (typing is hidden): '; read -rs PW < /dev/tty; echo
+    printf '      Your existing MySQL root password, for the checks below (typing is hidden): '; IFS= read -rs PW < /dev/tty; echo
   fi
 fi
 # Option file for the rest of this script: quoted, with \ and " escaped.
@@ -288,7 +321,7 @@ else
 fi
 
 # Put ~/mysql/bin on the PATH so 'mysql' works in a new Terminal window.
-if [ -z "$OTHER_MYSQL" ] && ! grep -q 'MIS781' "$RC" 2>/dev/null; then
+if [ -z "$OTHER_MYSQL" ] && ! grep -qF 'export PATH="$HOME/mysql/bin:$PATH"' "$RC" 2>/dev/null; then
   cat >> "$RC" <<'ZRC'
 
 # MySQL command-line tools for MIS781 (installed in ~/mysql by install.sh)
@@ -302,7 +335,14 @@ fi
 wb_version() { defaults read "$1/Contents/Info" CFBundleShortVersionString 2>/dev/null || true; }
 WB_DEST=""
 for d in "$APPS" "$HOME/Applications"; do
-  if [ -d "$d/$WB_APP" ]; then WB_DEST="$d"; break; fi
+  if [ -d "$d/$WB_APP" ]; then
+    if [ -n "$(wb_version "$d/$WB_APP")" ] && [ -x "$d/$WB_APP/Contents/MacOS/MySQL Workbench" ]; then
+      WB_DEST="$d"; break
+    else
+      echo "      Removing a broken copy of Workbench in $d (an earlier unpack was interrupted)."
+      rm -rf "${d:?}/${WB_APP:?}"
+    fi
+  fi
 done
 if [ -n "$WB_DEST" ]; then
   echo "[4/5] MySQL Workbench already installed ($(wb_version "$WB_DEST/$WB_APP")) in $WB_DEST."
@@ -332,8 +372,14 @@ else
   echo "      Files at ~/MIS781/test_db-master (employees.sql and the .dump files)."
 fi
 
+# Loaded means every table is complete, not just employees (salaries loads last).
+employees_complete() {
+  local r
+  r=$("$MYSQL_CLIENT" --defaults-extra-file="$CNF" -N -s -e "SELECT (SELECT COUNT(*) FROM employees.employees), (SELECT COUNT(*) FROM employees.salaries), (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='employees')" 2>/dev/null | tr '\t' ' ')
+  [ "$r" = "300024 2844047 8" ]
+}
 ROWS=0
-[ "$SERVER_OK" = 1 ] && ROWS=$("$MYSQL_CLIENT" --defaults-extra-file="$CNF" -N -s -e "SELECT COUNT(*) FROM employees.employees" 2>/dev/null || echo 0)
+[ "$SERVER_OK" = 1 ] && employees_complete && ROWS=300024
 if [ "$SERVER_OK" != 1 ]; then
   echo "      Data not loaded (no working connection to the server, see above)."
 elif [ "$ROWS" = 300024 ]; then
@@ -382,9 +428,7 @@ else
   echo "  MySQL Server      PROBLEM -> not responding"; OK=0
 fi
 [ -d "$WB_DEST/$WB_APP" ] && echo "  MySQL Workbench   OK  ($WB_DEST)" || { echo "  MySQL Workbench   PROBLEM"; OK=0; }
-ROWS=0
-[ "$SERVER_OK" = 1 ] && ROWS=$("$MYSQL_CLIENT" --defaults-extra-file="$CNF" -N -s -e "SELECT COUNT(*) FROM employees.employees" 2>/dev/null || echo 0)
-if [ "$ROWS" = 300024 ]; then echo "  Employees data    OK  (300024 employees)"; else echo "  Employees data    not loaded yet"; fi
+if [ "$SERVER_OK" = 1 ] && employees_complete; then echo "  Employees data    OK  (300024 employees, 2844047 salary rows)"; else echo "  Employees data    not loaded yet"; fi
 
 echo
 if [ "$OK" = 1 ]; then
