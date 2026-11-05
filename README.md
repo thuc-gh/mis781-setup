@@ -129,7 +129,7 @@ The setup script calls these; tutors can run them on their own.
 
 The removal scripts take `--dry-run` / `-DryRun` (show the list, change nothing) and `--all` / `-All` (remove everything). On Windows pass options as `& ([scriptblock]::Create((irm <url>))) -DryRun`.
 
-**Lab PCs and the Actions test (unattended).** Set `MIS781_ACTION` to `install`, `load`, `reset`, `remove-server` or `remove-all` and the setup script runs that action with no menu (`scan` prints the scan and stops). Supply `MIS781_ROOT_PASSWORD` (and `MIS781_IMPORT=y` to load the data) for Install, `MIS781_NEW_PASSWORD` for Reset, and `MIS781_CONFIRM=yes` for Reset and the two Remove actions; without it they print what they would do and stop.
+**Lab PCs (unattended).** Set `MIS781_ACTION` to `install`, `load`, `reset`, `remove-server` or `remove-all` and the setup script runs that action with no menu (`scan` prints the scan and stops). Supply `MIS781_ROOT_PASSWORD` (and `MIS781_IMPORT=y` to load the data) for Install, `MIS781_NEW_PASSWORD` for Reset, and `MIS781_CONFIRM=yes` for Reset and the two Remove actions; without it they print what they would do and stop.
 
 ## Manual downloads
 
@@ -148,8 +148,6 @@ If you would rather not run a script, every file is on the [Releases page](../..
 | `import-employees.sh` / `import-employees.ps1` | Load (or reload) the Employees database |
 | `workbench-connection.sh` / `workbench-connection.ps1` | Give Workbench the ready-made MIS781 connection (and on macOS the saved password); run by Install and, on macOS, Reset |
 | `uninstall-mysql.sh` / `uninstall-mysql.ps1` | Remove MySQL Server; with `--all` / `-All`, remove everything |
-| `.github/workflows/test.yml` | Installs, loads, resets, reinstalls and removes everything on clean macOS and Windows runners through the setup script; on Windows the student side runs as a standard user with no administrator rights (`.github/run-as-student.ps1`, `.github/windows-student.ps1`); run by hand before each trimester |
-| `GLOSSARY.md`, `docs/adr/` | The words the scripts and this README use, and the decisions behind them |
 | `LICENSES.md` | Licences and source availability for everything distributed here |
 
 ---
